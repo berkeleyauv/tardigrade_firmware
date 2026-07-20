@@ -74,19 +74,19 @@ Selection happens once at boot via a factory keyed off a build flag
 
 ## Link protocol (Robosub)
 
-The Jetson → ESP32 pose stream rides a **ROS link**. The Jetson runs the sensor
-fusion as a ROS node that publishes the fused pose on a topic; the ESP32 acts as
-a subscriber and hands each message to `ExternalEstimator`. The natural fit is
-**micro-ROS** (the ESP32 joins the ROS 2 graph as a micro-ROS node over a serial
-or Wi-Fi transport, subscribing to a `PoseStamped`/`Odometry` topic), but the
-seam only requires that a fused pose lands in `VehicleState` — a thin serial
-bridge that reframes the ROS message into the packet format from
-[communication.md](communication.md) is an acceptable fallback if micro-ROS
-proves impractical on the ESP32.
+The Jetson → ESP32 pose stream rides a **ROS link**: the Jetson publishes the
+fused pose on a topic and the ESP32 subscribes as a micro-ROS node, handing each
+message to `ExternalEstimator`.
 
-`JetsonLink` owns this transport and `ExternalEstimator` stays transport-
+`JetsonLink` owns that transport and `ExternalEstimator` stays transport-
 agnostic: it consumes whatever pose the link last delivered and applies the same
-`last_valid_us` freshness check as the hopcopter path.
+`last_valid_us` freshness check as the hopcopter path. The estimator seam only
+requires that a fused pose lands in `VehicleState`, so the transport choice —
+micro-ROS or a leaner custom bridge — stays cheap to reverse.
+
+See **[ros_link.md](ros_link.md)** for how DDS, XRCE-DDS, and micro-ROS relate,
+which process runs on which machine, the bandwidth and QoS constraints, and the
+fallback option.
 
 ## Build order
 
