@@ -47,6 +47,12 @@ bool VerticalEstimator::fuseRange(const Quat& orientation, float cos_tilt,
         if (!s->read(r) || !r.valid) {
             continue;
         }
+        // Record the raw reading for telemetry before any rejection below —
+        // the ground station wants to see what the sensor said, not only what
+        // the filter agreed to believe.
+        last_range_mm_[i] = static_cast<uint16_t>(r.range_m * 1000.0f);
+        last_range_stamp_us_[i] = telem_now_us_;
+
         // A reading at the sensor's ceiling is a saturation, not a distance.
         if (r.range_m >= s->maxRange()) {
             continue;
@@ -76,6 +82,7 @@ bool VerticalEstimator::update(uint32_t now_us, const Quat& orientation,
     if (!initialized_) {
         return false;
     }
+    telem_now_us_ = now_us;
 
     // Gravity direction expressed in the body frame — the same vector Mahony
     // builds. Its z component is cos(tilt); the whole vector projects body
@@ -160,6 +167,16 @@ bool VerticalEstimator::update(uint32_t now_us, const Quat& orientation,
 
     stale_ = (now_us - last_range_us_) > range_timeout_us_;
     return have_range;
+}
+
+uint16_t VerticalEstimator::lastRangeMm(uint8_t i) const {
+    if (i >= count_ || last_range_stamp_us_[i] == 0) {
+        return 0xFFFF;
+    }
+    if ((telem_now_us_ - last_range_stamp_us_[i]) > 300000u) {
+        return 0xFFFF;  // gone quiet; report the dropout, not a stale number
+    }
+    return last_range_mm_[i];
 }
 
 }  // namespace tardigrade

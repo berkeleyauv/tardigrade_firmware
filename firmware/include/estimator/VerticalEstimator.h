@@ -43,6 +43,13 @@ public:
     float altitude() const { return z_; }
     float verticalVelocity() const { return vz_; }
 
+    // Latest raw reading from sensor `i`, millimetres, for telemetry only —
+    // straight off the driver, before tilt compensation or cross-checking.
+    // 0xFFFF when the sensor has produced nothing usable in the last 300 ms,
+    // so a ground station can show per-sensor dropouts the fused altitude
+    // deliberately hides.
+    uint16_t lastRangeMm(uint8_t i) const;
+
     // False once the filter has coasted past the timeout with no usable range —
     // dead reckoning on accel alone goes bad quickly.
     bool healthy() const { return initialized_ && !stale_; }
@@ -77,6 +84,9 @@ private:
 
     uint32_t last_sample_us_ = 0;
     uint32_t last_range_us_ = 0;
+    uint16_t last_range_mm_[kMaxRangeSensors] = {};
+    uint32_t last_range_stamp_us_[kMaxRangeSensors] = {};
+    uint32_t telem_now_us_ = 0;
     bool initialized_ = false;
     bool seeded_ = false;
     bool stale_ = true;

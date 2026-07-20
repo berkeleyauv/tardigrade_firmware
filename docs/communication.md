@@ -1,5 +1,8 @@
 Scope: the ground link (laptop <-> vehicle) — commands and telemetry.
 
+Implemented in firmware/include/comms/Protocol.h. Host-side clients and how to
+run them: tools/README.md (WebSerial dashboard, Python console).
+
 The Robosub's onboard Jetson <-> ESP32 pose link is a separate channel with its
 own transport and constraints; see ros_link.md.
 

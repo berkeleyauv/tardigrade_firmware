@@ -1,0 +1,577 @@
+<!doctype html>
+<!--
+  Tardigrade GCS — WebSerial ground station.
+
+  Speaks the wire protocol from firmware/include/comms/Protocol.h:
+    [A7][5E][TYPE][LEN][PAYLOAD][CRC16 CCITT-FALSE little-endian]
+
+  Requirements: Chrome or Edge (WebSerial is Chromium-only). Open this file
+  directly, or serve it:  python -m http.server  ->  http://localhost:8000/tools/dashboard.html
+
+  No dependencies, no network. "Demo" feeds synthetic telemetry through the
+  exact same render path so the UI can be inspected with no hardware attached.
+
+  Safety notes, mirroring the firmware:
+    - Heartbeats are sent ONLY while armed. Closing this tab (or backgrounding
+      it — browsers throttle timers) stops traffic and the firmware deadman
+      disarms on its own. That is intentional and worth testing.
+    - Motor sliders cap at 30%, matching Safety::test_limit_.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tardigrade GCS</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --edge: #30363d; --ink: #e6edf3;
+    --dim: #8b949e; --accent: #58d0ff; --good: #3fb950; --bad: #f85149;
+    --warn: #d29922; --mono: "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, sans-serif; padding: 14px; }
+  h1 { font-size: 17px; letter-spacing: .04em; }
+  h1 span { color: var(--accent); }
+  header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  button {
+    background: #21262d; color: var(--ink); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.arm    { border-color: var(--good); color: var(--good); }
+  button.disarm { border-color: var(--bad);  color: var(--bad); font-weight: 700; }
+  .pill { border: 1px solid var(--edge); border-radius: 999px; padding: 3px 12px; font: 12px var(--mono); color: var(--dim); }
+  .pill.on  { color: var(--good); border-color: var(--good); }
+  .pill.err { color: var(--bad);  border-color: var(--bad); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tabs button { border-radius: 6px 6px 0 0; border-bottom: none; padding: 8px 22px; color: var(--dim); }
+  .tabs button.active { color: var(--accent); border-color: var(--accent); background: var(--panel); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; padding: 12px; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin-bottom: 10px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+  .card { background: #0d1117; border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; }
+  .card .k { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+  .card .v { font: 700 20px var(--mono); margin-top: 2px; }
+  .card .u { font-size: 11px; color: var(--dim); font-weight: 400; }
+  .card.stale .v { color: var(--warn); }
+  canvas.inst { display: block; margin: 0 auto; }
+  .motors { display: grid; gap: 10px; }
+  .motor { display: grid; grid-template-columns: 46px 1fr 64px; align-items: center; gap: 10px; }
+  .motor label { font: 12px var(--mono); color: var(--dim); }
+  .motor output { font: 13px var(--mono); text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .note { font-size: 12px; color: var(--dim); border-left: 3px solid var(--warn); padding: 6px 10px; margin-top: 10px; }
+  #log { font: 12px var(--mono); height: 150px; overflow-y: auto; white-space: pre-wrap; }
+  #log .tx { color: var(--dim); } #log .ok { color: var(--good); }
+  #log .no { color: var(--bad); } #log .in { color: var(--accent); }
+  #raw { font: 11px var(--mono); color: var(--dim); height: 76px; overflow-y: auto; white-space: pre-wrap; }
+  details summary { cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); }
+  .banner { background: #3d1d1f; border: 1px solid var(--bad); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display: none; }
+</style>
+</head>
+<body>
+
+<div id="nosupport" class="banner">
+  WebSerial is not available in this browser. Use <b>Chrome</b> or <b>Edge</b>
+  (and open via <code>file://</code> or <code>http://localhost</code>).
+</div>
+
+<header>
+  <h1>TARDIGRADE <span>GCS</span></h1>
+  <button id="btnConnect">Connect</button>
+  <button id="btnDemo">Demo</button>
+  <span class="pill" id="pillLink">link: —</span>
+  <span class="pill" id="pillArm">disarmed</span>
+  <span class="pill" id="pillRate">0 Hz</span>
+  <span class="pill" id="pillCrc">crc err: 0</span>
+</header>
+
+<div class="tabs">
+  <button id="tabHop" class="active">HOPCOPTER</button>
+  <button id="tabSub">ROBOSUB</button>
+</div>
+
+<!-- ============================= HOPCOPTER ============================= -->
+<div id="viewHop">
+  <div class="grid">
+    <div class="panel"><h2>Attitude</h2><canvas id="horizon" class="inst" width="220" height="220"></canvas></div>
+    <div class="panel"><h2>Heading</h2><canvas id="compassHop" class="inst" width="220" height="220"></canvas></div>
+    <div class="panel">
+      <h2>Vehicle state</h2>
+      <div class="cards">
+        <div class="card"><div class="k">Roll</div><div class="v" id="hRoll">—<span class="u">°</span></div></div>
+        <div class="card"><div class="k">Pitch</div><div class="v" id="hPitch">—<span class="u">°</span></div></div>
+        <div class="card"><div class="k">Yaw</div><div class="v" id="hYaw">—<span class="u">°</span></div></div>
+        <div class="card"><div class="k">Altitude</div><div class="v" id="hAlt">—<span class="u">m</span></div></div>
+        <div class="card"><div class="k">V-speed</div><div class="v" id="hVz">—<span class="u">m/s</span></div></div>
+        <div class="card"><div class="k">ToF A</div><div class="v" id="hTof0">—<span class="u">mm</span></div></div>
+        <div class="card"><div class="k">ToF B</div><div class="v" id="hTof1">—<span class="u">mm</span></div></div>
+        <div class="card"><div class="k">Flags</div><div class="v" id="hFlags" style="font-size:12px">—</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Motor test — capped 30% (firmware enforced)</h2>
+      <div class="motors" id="motorsHop"></div>
+      <div class="row">
+        <button class="arm" id="btnArmHop">ARM</button>
+        <button class="disarm" id="btnDisarmHop">DISARM</button>
+        <button id="btnStopHop">ZERO ALL</button>
+      </div>
+    </div>
+    <div class="panel" style="grid-column: 1 / -1"><h2>Roll / Pitch / Yaw — live</h2><canvas id="chartAtt" width="900" height="120" style="width:100%"></canvas></div>
+    <div class="panel" style="grid-column: 1 / -1"><h2>Altitude &amp; ToF — live</h2><canvas id="chartAlt" width="900" height="120" style="width:100%"></canvas></div>
+  </div>
+</div>
+
+<!-- ============================== ROBOSUB ============================== -->
+<div id="viewSub" style="display:none">
+  <div class="grid">
+    <div class="panel"><h2>Heading</h2><canvas id="compassSub" class="inst" width="220" height="220"></canvas></div>
+    <div class="panel">
+      <h2>Pose (Jetson: VectorNav + ZED)</h2>
+      <div class="cards">
+        <div class="card"><div class="k">Heading</div><div class="v" id="sYaw">—<span class="u">°</span></div></div>
+        <div class="card"><div class="k">Roll</div><div class="v" id="sRoll">—<span class="u">°</span></div></div>
+        <div class="card"><div class="k">Pitch</div><div class="v" id="sPitch">—<span class="u">°</span></div></div>
+        <div class="card"><div class="k">Z</div><div class="v" id="sZ">—<span class="u">m</span></div></div>
+        <div class="card"><div class="k">X</div><div class="v">n/a</div></div>
+        <div class="card"><div class="k">Y</div><div class="v">n/a</div></div>
+      </div>
+      <div class="note">
+        X/Y position await <b>JetsonLink / ExternalEstimator</b> (see
+        docs/ros_link.md). Orientation shown is whatever the ESP32's current
+        estimator reports.
+      </div>
+    </div>
+    <div class="panel" style="grid-column: 1 / -1">
+      <h2>Thruster test — capped 30% (firmware enforced)</h2>
+      <div class="motors" id="motorsSub" style="grid-template-columns: 1fr 1fr; column-gap: 24px;"></div>
+      <div class="row">
+        <button class="arm" id="btnArmSub">ARM</button>
+        <button class="disarm" id="btnDisarmSub">DISARM</button>
+        <button id="btnStopSub">ZERO ALL</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:12px"><h2>Events</h2><div id="log"></div></div>
+<div class="panel" style="margin-top:12px"><details open><summary>Raw serial text</summary><div id="raw"></div></details></div>
+
+<script>
+"use strict";
+/* ------------------------- protocol (mirror of Protocol.cpp) ------------- */
+const SYNC1 = 0xA7, SYNC2 = 0x5E, MAX_PAYLOAD = 64;
+const T = { HEARTBEAT:1, ARM:2, DISARM:3, SET_MOTOR:4, GET_STATE:5, STATE:0x80, ACK:0x81, TEXT:0x82 };
+const TYPE_NAMES = Object.fromEntries(Object.entries(T).map(([k,v]) => [v,k]));
+const ACK_REASONS = ["Ok","NotArmed","LinkLost","BadIndex","BadValue","NotPermitted"];
+
+function crc16(bytes) {
+  let c = 0xFFFF;
+  for (const b of bytes) {
+    c ^= b << 8;
+    for (let i = 0; i < 8; i++) c = (c & 0x8000) ? ((c << 1) ^ 0x1021) & 0xFFFF : (c << 1) & 0xFFFF;
+  }
+  return c;
+}
+function frame(type, payload = []) {
+  const body = [type, payload.length, ...payload];
+  const c = crc16(body);
+  return new Uint8Array([SYNC1, SYNC2, ...body, c & 0xFF, c >> 8]);
+}
+
+/* Byte-wise parser, same states and resync behaviour as PacketParser.cpp.
+   Bytes rejected while hunting for sync are treated as printable text — the
+   firmware shares the port with its human-readable status prints. */
+const parser = {
+  st: 0, type: 0, len: 0, idx: 0, crc: 0, buf: new Uint8Array(MAX_PAYLOAD),
+  crcErrors: 0, frames: 0, textAcc: "",
+  feed(b, onFrame) {
+    switch (this.st) {
+      case 0:
+        if (b === SYNC1) { this.st = 1; }
+        else if (b === 10) { flushRaw(this.textAcc); this.textAcc = ""; }
+        else if (b >= 32 && b < 127) { this.textAcc += String.fromCharCode(b); }
+        return;
+      case 1: this.st = (b === SYNC2) ? 2 : (b === SYNC1 ? 1 : 0); return;
+      case 2: this.type = b; this.st = 3; return;
+      case 3:
+        if (b > MAX_PAYLOAD) { this.st = 0; return; }
+        this.len = b; this.idx = 0; this.st = (b === 0) ? 5 : 4; return;
+      case 4:
+        this.buf[this.idx++] = b;
+        if (this.idx >= this.len) this.st = 5;
+        return;
+      case 5: this.crc = b; this.st = 6; return;
+      case 6: {
+        this.crc |= b << 8; this.st = 0;
+        const body = new Uint8Array(2 + this.len);
+        body[0] = this.type; body[1] = this.len;
+        body.set(this.buf.subarray(0, this.len), 2);
+        if (crc16(body) !== this.crc) { this.crcErrors++; return; }
+        this.frames++;
+        onFrame(this.type, this.buf.slice(0, this.len));
+        return;
+      }
+    }
+  },
+};
+
+/* ------------------------------ app state -------------------------------- */
+const telem = { ts:0, roll:0, pitch:0, yaw:0, alt:NaN, vz:NaN, flags:0,
+                tof:[null,null], lastRx:0 };
+const hist = { roll:[], pitch:[], yaw:[], alt:[], tof0:[], tof1:[] };  // ring buffers
+const HIST_N = 300;
+let port = null, writer = null, readerAbort = null;
+let armed = false, demo = false, demoT = 0;
+let stateCount = 0, lastRateCalc = performance.now();
+
+function push(k, v) { hist[k].push(v); if (hist[k].length > HIST_N) hist[k].shift(); }
+
+/* ------------------------------- logging --------------------------------- */
+const logEl = document.getElementById("log"), rawEl = document.getElementById("raw");
+function log(msg, cls = "") {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = `${new Date().toTimeString().slice(0, 8)}  ${msg}`;
+  logEl.appendChild(d);
+  while (logEl.childElementCount > 200) logEl.firstChild.remove();
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function flushRaw(line) {
+  if (!line.trim()) return;
+  const d = document.createElement("div");
+  d.textContent = line;
+  rawEl.appendChild(d);
+  while (rawEl.childElementCount > 100) rawEl.firstChild.remove();
+  rawEl.scrollTop = rawEl.scrollHeight;
+}
+
+/* ------------------------------ serial ----------------------------------- */
+async function connect() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) { log("connect failed: " + e.message, "no"); return; }
+  writer = port.writable.getWriter();
+  document.getElementById("btnConnect").textContent = "Disconnect";
+  log("port open @115200", "ok");
+  readLoop();
+}
+async function disconnect() {
+  try {
+    if (armed) await send(frame(T.DISARM));   // never leave it armed behind us
+  } catch (_) {}
+  armed = false;
+  if (readerAbort) readerAbort.abort();
+  try { writer && writer.releaseLock(); } catch (_) {}
+  try { port && await port.close(); } catch (_) {}
+  port = writer = null;
+  document.getElementById("btnConnect").textContent = "Connect";
+  log("disconnected");
+}
+async function readLoop() {
+  while (port && port.readable) {
+    readerAbort = new AbortController();
+    const reader = port.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        for (const b of value) parser.feed(b, onFrame);
+      }
+    } catch (e) {
+      log("read error: " + e.message, "no");
+    } finally {
+      reader.releaseLock();
+    }
+    if (!port) break;
+  }
+}
+async function send(bytes) {
+  if (demo) return;                       // demo swallows commands
+  if (!writer) { log("not connected", "no"); return; }
+  try { await writer.write(bytes); } catch (e) { log("write failed: " + e.message, "no"); }
+}
+
+/* ------------------------------ frames in -------------------------------- */
+function onFrame(type, p) {
+  if (type === T.STATE) {
+    if (p.length < 15) return;
+    const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+    telem.ts    = dv.getUint32(0, true);
+    telem.roll  = dv.getInt16(4, true) / 100;
+    telem.pitch = dv.getInt16(6, true) / 100;
+    telem.yaw   = dv.getInt16(8, true) / 100;
+    telem.alt   = dv.getInt16(10, true) / 1000;
+    telem.vz    = dv.getInt16(12, true) / 1000;
+    telem.flags = dv.getUint8(14);
+    if (p.length >= 19) {
+      const a = dv.getUint16(15, true), b = dv.getUint16(17, true);
+      telem.tof = [a === 0xFFFF ? null : a, b === 0xFFFF ? null : b];
+    }
+    telem.lastRx = performance.now();
+    armed = !!(telem.flags & 1);
+    stateCount++;
+    push("roll", telem.roll); push("pitch", telem.pitch); push("yaw", telem.yaw);
+    push("alt", telem.alt);
+    push("tof0", telem.tof[0] == null ? NaN : telem.tof[0] / 1000);
+    push("tof1", telem.tof[1] == null ? NaN : telem.tof[1] / 1000);
+  } else if (type === T.ACK) {
+    const [echoed, ok, reason] = p;
+    log(`ACK ${TYPE_NAMES[echoed] ?? echoed}: ${ok ? "accepted" : "REFUSED"} (${ACK_REASONS[reason] ?? reason})`,
+        ok ? "ok" : "no");
+  } else if (type === T.TEXT) {
+    log("FC: " + new TextDecoder().decode(p), "in");
+  }
+}
+
+/* ------------------------- periodic traffic out --------------------------
+   Heartbeat only while armed — so closing/backgrounding this tab starves the
+   firmware deadman and it disarms itself. GET_STATE polls drive telemetry. */
+setInterval(() => { if (armed && !demo) send(frame(T.HEARTBEAT)); }, 100);
+setInterval(() => { if ((port || demo) && !demo) send(frame(T.GET_STATE)); }, 50);
+setInterval(() => {
+  const now = performance.now();
+  const hz = stateCount * 1000 / (now - lastRateCalc);
+  document.getElementById("pillRate").textContent = hz.toFixed(0) + " Hz";
+  stateCount = 0; lastRateCalc = now;
+}, 1000);
+
+/* ------------------------------ commands --------------------------------- */
+function cmdArm()    { send(frame(T.ARM));    log("→ ARM", "tx"); if (demo) { armed = true;  log("ACK ARM: accepted (Ok) [demo]", "ok"); } }
+function cmdDisarm() { send(frame(T.DISARM)); log("→ DISARM", "tx"); if (demo) { armed = false; log("ACK DISARM: accepted (Ok) [demo]", "ok"); } zeroSliders(); }
+function cmdMotor(i, frac) {
+  const v = Math.max(0, Math.min(1000, Math.round(frac * 1000)));
+  send(frame(T.SET_MOTOR, [i, v & 0xFF, v >> 8]));
+}
+
+/* --------------------------- motor slider panels -------------------------- */
+const motorSendAt = {};
+function buildMotors(el, count, prefix) {
+  for (let i = 0; i < count; i++) {
+    const row = document.createElement("div");
+    row.className = "motor";
+    row.innerHTML = `<label>${prefix}${i}</label>
+      <input type="range" min="0" max="30" step="0.5" value="0" data-m="${i}">
+      <output>0.0%</output>`;
+    const slider = row.querySelector("input"), out = row.querySelector("output");
+    slider.addEventListener("input", () => {
+      out.textContent = (+slider.value).toFixed(1) + "%";
+      const now = performance.now();
+      if (!motorSendAt[i] || now - motorSendAt[i] > 100) {   // rate-limit 10 Hz
+        motorSendAt[i] = now;
+        cmdMotor(i, slider.value / 100);
+      }
+    });
+    slider.addEventListener("change", () => cmdMotor(i, slider.value / 100));
+    el.appendChild(row);
+  }
+}
+buildMotors(document.getElementById("motorsHop"), 4, "M");
+buildMotors(document.getElementById("motorsSub"), 8, "T");
+function zeroSliders() {
+  document.querySelectorAll(".motor input").forEach(s => {
+    s.value = 0; s.dispatchEvent(new Event("input"));
+  });
+}
+for (const [btn, fn] of [["btnArmHop", cmdArm], ["btnArmSub", cmdArm],
+                         ["btnDisarmHop", cmdDisarm], ["btnDisarmSub", cmdDisarm]])
+  document.getElementById(btn).onclick = fn;
+document.getElementById("btnStopHop").onclick = zeroSliders;
+document.getElementById("btnStopSub").onclick = zeroSliders;
+
+/* -------------------------------- tabs ----------------------------------- */
+const tabHop = document.getElementById("tabHop"), tabSub = document.getElementById("tabSub");
+function setTab(hop) {
+  document.getElementById("viewHop").style.display = hop ? "" : "none";
+  document.getElementById("viewSub").style.display = hop ? "none" : "";
+  tabHop.classList.toggle("active", hop);
+  tabSub.classList.toggle("active", !hop);
+  localStorage.setItem("tg_tab", hop ? "hop" : "sub");
+}
+tabHop.onclick = () => setTab(true);
+tabSub.onclick = () => setTab(false);
+setTab(localStorage.getItem("tg_tab") !== "sub");
+
+/* ----------------------------- instruments ------------------------------- */
+function drawHorizon(ctx, w, h, rollDeg, pitchDeg) {
+  const cx = w / 2, cy = h / 2, r = Math.min(cx, cy) - 6;
+  ctx.clearRect(0, 0, w, h);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.clip();
+  ctx.translate(cx, cy);
+  ctx.rotate(-rollDeg * Math.PI / 180);
+  const off = pitchDeg * (r / 45);          // 45° of pitch spans the radius
+  ctx.fillStyle = "#274b6d"; ctx.fillRect(-2*r, -2*r + off, 4*r, 2*r);  // sky
+  ctx.fillStyle = "#4d3a1f"; ctx.fillRect(-2*r, off, 4*r, 2*r);        // ground
+  ctx.strokeStyle = "#e6edf3"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(-r, off); ctx.lineTo(r, off); ctx.stroke();
+  ctx.strokeStyle = "rgba(230,237,243,.55)"; ctx.lineWidth = 1;
+  ctx.font = "9px monospace"; ctx.fillStyle = "rgba(230,237,243,.55)"; ctx.textAlign = "center";
+  for (const p of [-30, -20, -10, 10, 20, 30]) {
+    const y = off + p * (r / 45), lw = p % 20 === 0 ? 26 : 15;
+    ctx.beginPath(); ctx.moveTo(-lw, y); ctx.lineTo(lw, y); ctx.stroke();
+    if (p % 20 === 0) ctx.fillText(Math.abs(p), lw + 12, y + 3);
+  }
+  ctx.restore();
+  // fixed aircraft reference
+  ctx.strokeStyle = "#f0b429"; ctx.lineWidth = 3; ctx.beginPath();
+  ctx.moveTo(cx - 34, cy); ctx.lineTo(cx - 10, cy); ctx.lineTo(cx - 4, cy + 6);
+  ctx.moveTo(cx + 34, cy); ctx.lineTo(cx + 10, cy); ctx.lineTo(cx + 4, cy + 6);
+  ctx.stroke();
+  ctx.strokeStyle = "#30363d"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
+}
+
+function drawCompass(ctx, w, h, yawDeg) {
+  const cx = w / 2, cy = h / 2, r = Math.min(cx, cy) - 6;
+  ctx.clearRect(0, 0, w, h);
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-yawDeg * Math.PI / 180);
+  ctx.strokeStyle = "#8b949e"; ctx.fillStyle = "#8b949e";
+  ctx.font = "bold 13px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let d = 0; d < 360; d += 15) {
+    const a = d * Math.PI / 180, big = d % 90 === 0;
+    ctx.save(); ctx.rotate(a);
+    ctx.lineWidth = big ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(0, -r + (big ? 14 : 7)); ctx.stroke();
+    if (big) {
+      ctx.fillStyle = d === 0 ? "#f85149" : "#e6edf3";
+      ctx.fillText("NESW"[d / 90], 0, -r + 26);
+      ctx.fillStyle = "#8b949e";
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+  // fixed lubber line + readout
+  ctx.strokeStyle = "#f0b429"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(cx, cy - r - 2); ctx.lineTo(cx, cy - r + 14); ctx.stroke();
+  ctx.fillStyle = "#58d0ff"; ctx.font = "bold 20px monospace"; ctx.textAlign = "center";
+  const shown = ((yawDeg % 360) + 360) % 360;
+  ctx.fillText(shown.toFixed(0).padStart(3, "0") + "°", cx, cy + 6);
+  ctx.strokeStyle = "#30363d"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
+}
+
+function drawChart(ctx, w, h, series, colors, lo, hi) {
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = "#21262d";
+  for (let i = 1; i < 4; i++) {
+    const y = h * i / 4;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  series.forEach((data, si) => {
+    ctx.strokeStyle = colors[si]; ctx.lineWidth = 1.5; ctx.beginPath();
+    let started = false;
+    data.forEach((v, i) => {
+      if (Number.isNaN(v)) { started = false; return; }
+      const x = i * w / (HIST_N - 1);
+      const y = h - (v - lo) / (hi - lo) * h;
+      started ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      started = true;
+    });
+    ctx.stroke();
+  });
+}
+
+/* ------------------------------ render loop ------------------------------ */
+const $ = id => document.getElementById(id);
+const fmt = (v, dp = 2) => Number.isFinite(v) ? v.toFixed(dp) : "—";
+function render() {
+  const fresh = demo || (performance.now() - telem.lastRx < 500);
+  const flags = telem.flags;
+
+  $("pillLink").textContent = "link: " + (demo ? "demo" : port ? (fresh ? "ok" : "stale") : "—");
+  $("pillLink").className = "pill " + (demo || (port && fresh) ? "on" : port ? "err" : "");
+  $("pillArm").textContent = armed ? "ARMED" : "disarmed";
+  $("pillArm").className = "pill " + (armed ? "err" : "");
+  $("pillCrc").textContent = "crc err: " + parser.crcErrors;
+
+  const flagStr = [(flags & 1) && "ARM", (flags & 2) && "EST", (flags & 4) && "ALT", (flags & 8) && "LNK"]
+    .filter(Boolean).join(" ") || "—";
+
+  if ($("viewHop").style.display !== "none") {
+    $("hRoll").childNodes[0].nodeValue = fmt(telem.roll, 1);
+    $("hPitch").childNodes[0].nodeValue = fmt(telem.pitch, 1);
+    $("hYaw").childNodes[0].nodeValue = fmt(telem.yaw, 1);
+    $("hAlt").childNodes[0].nodeValue = fmt(telem.alt, 3);
+    $("hVz").childNodes[0].nodeValue = fmt(telem.vz, 2);
+    $("hTof0").childNodes[0].nodeValue = telem.tof[0] == null ? "—" : telem.tof[0];
+    $("hTof1").childNodes[0].nodeValue = telem.tof[1] == null ? "—" : telem.tof[1];
+    $("hFlags").textContent = flagStr;
+    const hz = $("horizon"), ch = $("compassHop");
+    drawHorizon(hz.getContext("2d"), hz.width, hz.height, telem.roll, telem.pitch);
+    drawCompass(ch.getContext("2d"), ch.width, ch.height, telem.yaw);
+    const ca = $("chartAtt");
+    drawChart(ca.getContext("2d"), ca.width, ca.height,
+              [hist.roll, hist.pitch, hist.yaw], ["#f85149", "#3fb950", "#58d0ff"], -90, 90);
+    const cl = $("chartAlt");
+    drawChart(cl.getContext("2d"), cl.width, cl.height,
+              [hist.alt, hist.tof0, hist.tof1], ["#58d0ff", "#d29922", "#bc8cff"], 0, 2);
+  } else {
+    $("sYaw").childNodes[0].nodeValue = fmt(((telem.yaw % 360) + 360) % 360, 1);
+    $("sRoll").childNodes[0].nodeValue = fmt(telem.roll, 1);
+    $("sPitch").childNodes[0].nodeValue = fmt(telem.pitch, 1);
+    $("sZ").childNodes[0].nodeValue = fmt(telem.alt, 3);
+    const cs = $("compassSub");
+    drawCompass(cs.getContext("2d"), cs.width, cs.height, telem.yaw);
+  }
+  lastRender = performance.now();
+}
+/* rAF gives 60 fps while the tab is visible, but browsers stop firing it for
+   hidden/background tabs — without a fallback the instruments would freeze
+   silently. The interval keeps a slow render alive whenever rAF is starved. */
+let lastRender = 0;
+(function tick() { render(); requestAnimationFrame(tick); })();
+setInterval(() => { if (performance.now() - lastRender > 250) render(); }, 250);
+
+/* -------------------------------- demo ----------------------------------- */
+let demoTimer = null;
+function toggleDemo() {
+  demo = !demo;
+  document.getElementById("btnDemo").textContent = demo ? "Stop demo" : "Demo";
+  if (demo) {
+    log("demo telemetry started (synthetic, nothing is transmitted)", "in");
+    demoTimer = setInterval(() => {
+      demoT += 0.05;
+      const p = {
+        roll:  12 * Math.sin(demoT * 0.9),
+        pitch: 7 * Math.sin(demoT * 0.6 + 1),
+        yaw:   (demoT * 9) % 360,
+        alt:   0.5 + 0.35 * Math.sin(demoT * 0.4),
+        vz:    0.35 * 0.4 * Math.cos(demoT * 0.4),
+      };
+      const tofBase = p.alt * 1000 * Math.cos(p.roll * Math.PI / 180);
+      Object.assign(telem, p, {
+        ts: Math.round(demoT * 1e6),
+        flags: 0b1110 | (armed ? 1 : 0),
+        tof: [Math.round(tofBase + (Math.random() - .5) * 25),
+              Math.random() < 0.93 ? Math.round(tofBase + (Math.random() - .5) * 25) : null],
+        lastRx: performance.now(),
+      });
+      push("roll", telem.roll); push("pitch", telem.pitch); push("yaw", ((telem.yaw + 180) % 360) - 180);
+      push("alt", telem.alt);
+      push("tof0", telem.tof[0] == null ? NaN : telem.tof[0] / 1000);
+      push("tof1", telem.tof[1] == null ? NaN : telem.tof[1] / 1000);
+      stateCount++;
+    }, 50);
+  } else {
+    clearInterval(demoTimer);
+    armed = false;
+    log("demo stopped");
+  }
+}
+document.getElementById("btnDemo").onclick = toggleDemo;
+
+/* ------------------------------- wiring ---------------------------------- */
+if (!("serial" in navigator)) {
+  document.getElementById("nosupport").style.display = "block";
+  document.getElementById("btnConnect").disabled = true;
+}
+document.getElementById("btnConnect").onclick = () => (port ? disconnect() : connect());
+window.addEventListener("beforeunload", () => { try { if (armed && writer) writer.write(frame(T.DISARM)); } catch (_) {} });
+</script>
+</body>
+</html>
