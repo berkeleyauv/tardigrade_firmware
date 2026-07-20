@@ -56,6 +56,16 @@ void putU32(uint8_t* buf, size_t& offset, uint32_t value) {
     buf[offset++] = static_cast<uint8_t>((value >> 24) & 0xFF);
 }
 
+void putF32(uint8_t* buf, size_t& offset, float value) {
+    // Bit-copy into a u32 rather than pointer-punning, which would violate
+    // strict aliasing. Both ends are little-endian IEEE-754, so the layout
+    // matches on the wire.
+    uint32_t bits;
+    static_assert(sizeof(bits) == sizeof(value), "float must be 32-bit");
+    __builtin_memcpy(&bits, &value, sizeof(bits));
+    putU32(buf, offset, bits);
+}
+
 uint16_t getU16(const uint8_t* buf, size_t offset) {
     return static_cast<uint16_t>(buf[offset]) |
            (static_cast<uint16_t>(buf[offset + 1]) << 8);
@@ -63,6 +73,16 @@ uint16_t getU16(const uint8_t* buf, size_t offset) {
 
 int16_t getI16(const uint8_t* buf, size_t offset) {
     return static_cast<int16_t>(getU16(buf, offset));
+}
+
+float getF32(const uint8_t* buf, size_t offset) {
+    uint32_t bits = static_cast<uint32_t>(buf[offset]) |
+                    (static_cast<uint32_t>(buf[offset + 1]) << 8) |
+                    (static_cast<uint32_t>(buf[offset + 2]) << 16) |
+                    (static_cast<uint32_t>(buf[offset + 3]) << 24);
+    float value;
+    __builtin_memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 }  // namespace tardigrade

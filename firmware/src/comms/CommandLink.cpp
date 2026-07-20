@@ -22,9 +22,6 @@ void CommandLink::update(uint32_t now_us, const VehicleState& state) {
     int budget = kMaxBytesPerUpdate;
     while (io_.available() > 0 && budget-- > 0) {
         if (parser_.feed(static_cast<uint8_t>(io_.read()))) {
-            // A frame that survived the CRC is proof the host is alive, whatever
-            // it happened to be asking for.
-            safety_.noteTraffic(now_us);
             dispatch(now_us, state);
         }
     }
@@ -33,9 +30,23 @@ void CommandLink::update(uint32_t now_us, const VehicleState& state) {
 void CommandLink::dispatch(uint32_t now_us, const VehicleState& state) {
     const MsgType type = parser_.type();
 
+    // Pose frames come from the Jetson, not the operator. They must NOT feed
+    // the operator deadman — losing the ground station has to disarm the
+    // vehicle even while pose keeps streaming. Their own freshness is tracked
+    // by ExternalEstimator. Route and return before noteTraffic().
+    if (type == MsgType::Pose) {
+        if (jetson_ != nullptr) {
+            jetson_->onPoseFrame(parser_.payload(), parser_.length(), now_us);
+        }
+        return;
+    }
+
+    // Every OTHER valid frame is proof the operator is alive, whatever it asked.
+    safety_.noteTraffic(now_us);
+
     switch (type) {
         case MsgType::Heartbeat:
-            // noteTraffic() already ran; nothing further to do.
+            // noteTraffic() above is the whole point; nothing further to do.
             break;
 
         case MsgType::Arm:

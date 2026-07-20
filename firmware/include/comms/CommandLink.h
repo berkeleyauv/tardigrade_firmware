@@ -10,6 +10,7 @@
 // Non-blocking by construction: it reads only what is already buffered and
 // returns, so a silent or half-speaking host costs the control loop nothing.
 
+#include "comms/JetsonLink.h"
 #include "comms/PacketParser.h"
 #include "core/types.h"
 #include "safety/Safety.h"
@@ -30,6 +31,10 @@ public:
         vertical_ = vertical;
     }
 
+    // Optional: route inbound Pose frames (robosub) to this link. Left unset,
+    // Pose frames are silently ignored, which is correct for the hopcopter.
+    void setJetsonLink(JetsonLink* jetson) { jetson_ = jetson; }
+
     // Call every tick. Drains the input buffer and dispatches whole frames.
     // `state` is what a GetState request will be answered with.
     void update(uint32_t now_us, const VehicleState& state);
@@ -49,6 +54,7 @@ private:
     Safety& safety_;
     PacketParser parser_;
     const VerticalEstimator* vertical_ = nullptr;
+    JetsonLink* jetson_ = nullptr;
     uint8_t motor_count_;
 };
 

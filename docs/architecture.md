@@ -47,6 +47,16 @@ Modules
     - HAL
         - Purpose: Hiding the esp
         - this package own GPIO, PWM, SPI, UART, I2C, Timers, etc.
+        - STATUS: intentionally NOT a hand-written module. The Arduino-ESP32
+          framework (Wire, ledc*, pinMode) already fills this role, and
+          portability to a non-Arduino target is not a project goal. Drivers
+          call the framework directly. A HAL abstracts across CHIPS (hiding
+          register maps); it is not plug-and-play and does not auto-detect what
+          is wired where — that knowledge is fixed, because the mixer depends on
+          which motor is on which pin. The swap-the-sensor abstraction we
+          actually need lives in the driver interfaces (IImuSource,
+          IRangeSensor, IMotorSink), not here. The empty src/hal/ directory is a
+          transfer leftover, not pending work. See docs/hardware.md.
     - Drivers
         - Purpose: Understanding the hardware
         - owns IMU, TOF, ESC, Battery, LED, etc.

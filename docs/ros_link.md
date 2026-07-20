@@ -145,30 +145,57 @@ preferably, micro-ROS runs in its own FreeRTOS task that writes the latest pose
 into a shared buffer the estimator reads. At a 1 kHz loop the separate task is
 cleaner: it keeps serial I/O jitter out of the control path entirely.
 
-## Where this lands in the firmware
+## As built: the serial bridge (not micro-ROS)
+
+The everything above is the general design space. What is **actually
+implemented** is the leaner serial bridge, chosen after reading tardigrade_ws:
+
+- The fusion is `robot_localization`'s `ekf_node`, publishing
+  `nav_msgs/Odometry` on `/tardigrade/state/odometry/filtered` at **30 Hz** — not
+  the 200–800 Hz earlier drafts of this doc assumed. The VectorNav is 800 Hz, but
+  the *fused* output is 30.
+- The existing stack already talks to the ESP with a Jetson-side serial bridge
+  (the old `esp_thruster_bridge.py`), so a bridge fits the deployment.
+- `nav_msgs/Odometry` carries two 6×6 float64 covariance matrices (576 bytes) the
+  ESP32 throws away — brutal to ship over micro-ROS serial for no benefit.
+
+So a Jetson-side node subscribes to the odometry topic and reframes each message
+into a compact **`Pose` frame** (54 bytes: seq + position + quaternion + linear
+& angular velocity as float32) in the ground-link protocol from
+[communication.md](communication.md). It rides the SAME serial line as operator
+commands; the ESP's existing `PacketParser` demuxes by type.
 
 ```
-VectorNav + ZED → Jetson fusion node → /pose topic
-                                          │ micro-ROS
-                                          ▼
-                    JetsonLink (owns session, entities, reconnect)
-                                          │
-                                          ▼
+ZED + VectorNav → robot_localization EKF → /tardigrade/state/odometry/filtered
+                                              │ (nav_msgs/Odometry, 30 Hz)
+                       pose_bridge.py / gcs_server.py --ros  (packs Pose frame)
+                                              │ serial
+                                              ▼
+                    CommandLink → JetsonLink (decodes Pose frame)
+                                              │
+                                              ▼
                    ExternalEstimator (passthrough) → VehicleState
 ```
 
-`JetsonLink` is the only module that knows any of this exists.
-`ExternalEstimator` stays transport-agnostic: it copies whatever pose the link
-last delivered and applies the same `last_valid_us` freshness check as the
-hopcopter path.
+Firmware modules: `JetsonLink` is the only thing that knows pose arrives over a
+wire; `ExternalEstimator` reads a plain `PoseSample` and applies the same
+freshness-timeout failsafe as the hopcopter's `OnboardEstimator`. Crucially,
+Pose frames do **not** feed Safety's operator deadman — the pose link and the
+operator link are independent failsafes, so losing the ground station still
+disarms even while pose streams (see the failsafe layering in
+[architecture.md](architecture.md)).
 
-## Fallback
+Host tooling lives in `tools/`: `tardigrade_protocol.py` (one shared wire
+implementation), `pose_bridge.py` (autonomy-only), and `gcs_server.py --ros`
+(pose injection **plus** the remote dashboard). See
+[ground_station.md](ground_station.md) for hosting.
 
-If micro-ROS proves too heavy or too fiddly on the ESP32, the alternative is a
-PX4-style bridge: a hand-rolled serial protocol into a Jetson-side node that
-republishes to ROS. Leaner, but the serialization and versioning become ours to
-maintain.
+## The micro-ROS alternative, kept on the shelf
 
-Because `JetsonLink` is the only place that would change, this decision stays
-cheap to reverse — which is the reason to start with micro-ROS rather than
-designing around a custom protocol up front.
+micro-ROS remains viable and would make the ESP32 a real ROS 2 node
+(`PoseStamped`, BEST_EFFORT QoS, an executor spun with zero timeout in its own
+FreeRTOS task). It was not chosen because it adds a heavy MCU dependency and the
+`micro_ros_agent` as a hard runtime prerequisite, for no gain over a 54-byte
+frame at 30 Hz. Because `JetsonLink` is the only module that would change,
+switching later touches nothing above the seam — which is exactly why starting
+with the simpler bridge costs nothing.

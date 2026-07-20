@@ -64,9 +64,11 @@ Selection happens once at boot via a factory keyed off a build flag
 - `update()` is **pull-based and must never block.** The fixed-rate loop calls
   it every tick.
 - The I2C path delivers a fresh sample on (nearly) every tick. The Jetson path
-  is **asynchronous** — pose messages arrive at the Jetson's publish rate
-  (typically ~200–800 Hz), independent of the control loop. When no new message
-  is available, the estimator reuses its last `VehicleState`.
+  is **asynchronous** — pose messages arrive at the EKF's publish rate
+  (the robot_localization filter in tardigrade_ws runs at **30 Hz**, far slower
+  than the control loop and slower than the VectorNav's own 800 Hz), independent
+  of the loop. When no new message is available, the estimator reuses its last
+  `VehicleState`.
 - Each estimator tracks `last_valid_us`. If
   `now_us - last_valid_us > freshness_timeout`, `healthy()` returns `false`,
   which trips the Safety module's sensor-timeout failsafe. Both vehicles use

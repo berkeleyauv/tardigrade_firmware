@@ -41,6 +41,12 @@ enum class MsgType : uint8_t {
     // "stop" is the same number on every vehicle. See MotorOutput in types.h.
     SetMotor  = 0x04,
     GetState  = 0x05,
+    // Fused pose from the Jetson (robosub). See PoseFrame below. Injected onto
+    // the same serial link as operator commands; the Jetson bridge multiplexes
+    // both. Does NOT feed Safety's link deadman — pose freshness is a separate
+    // failsafe owned by ExternalEstimator, exactly as the IMU is on the
+    // hopcopter. Losing the operator must still disarm even while pose flows.
+    Pose      = 0x06,
 
     // ---- vehicle -> host ----
     State = 0x80,      // see encodeState()
@@ -64,6 +70,22 @@ inline constexpr uint8_t kFlagArmed        = 1 << 0;
 inline constexpr uint8_t kFlagStateValid   = 1 << 1;
 inline constexpr uint8_t kFlagAltitudeOk   = 1 << 2;
 inline constexpr uint8_t kFlagLinkOk       = 1 << 3;
+inline constexpr uint8_t kFlagPoseOk       = 1 << 4;  // robosub: pose link fresh
+
+// Pose frame payload (Jetson -> ESP), little-endian. float32 rather than the
+// scaled int16s used for telemetry: this is the EKF's authoritative output and
+// the values (metres, unit quaternion, m/s, rad/s) don't share a natural fixed
+// scale. Carries the FULL pose so the wire format need not change when
+// VehicleState later gains x/y position; ExternalEstimator maps the subset the
+// contract currently holds.
+//
+//   seq   : u16   sequence counter, for drop detection
+//   pos   : f32*3 x, y, z   world frame (ENU per REP-103), metres
+//   quat  : f32*4 w, x, y, z   body-to-world, normalized
+//   linvel: f32*3 x, y, z   world frame, m/s
+//   angvel: f32*3 x, y, z   body frame, rad/s
+// = 2 + 12 + 16 + 12 + 12 = 54 bytes.
+inline constexpr uint8_t kPoseFrameLen = 54;
 
 // CRC-16/CCITT-FALSE over TYPE, LEN and PAYLOAD. Bit-serial rather than
 // table-driven: at 20 Hz telemetry the cycles are free and the table is not.
@@ -79,7 +101,10 @@ void putU16(uint8_t* buf, size_t& offset, uint16_t value);
 void putI16(uint8_t* buf, size_t& offset, int16_t value);
 void putU32(uint8_t* buf, size_t& offset, uint32_t value);
 
+void putF32(uint8_t* buf, size_t& offset, float value);
+
 uint16_t getU16(const uint8_t* buf, size_t offset);
 int16_t getI16(const uint8_t* buf, size_t offset);
+float getF32(const uint8_t* buf, size_t offset);
 
 }  // namespace tardigrade
