@@ -61,4 +61,8 @@ uint16_t getU16(const uint8_t* buf, size_t offset) {
            (static_cast<uint16_t>(buf[offset + 1]) << 8);
 }
 
+int16_t getI16(const uint8_t* buf, size_t offset) {
+    return static_cast<int16_t>(getU16(buf, offset));
+}
+
 }  // namespace tardigrade

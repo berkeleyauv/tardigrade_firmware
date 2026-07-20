@@ -9,7 +9,7 @@ itself is standard library, and --selftest runs with no hardware at all.
   python tools/gcs.py --port COM5
   python tools/gcs.py --port COM5 --motor 2 --value 0.15
 
-Interactive commands: arm, disarm, m <index> <0..1>, state, quit
+Interactive commands: arm, disarm, m <index> <-1..1>, state, quit
 While armed the tool heartbeats automatically; stop it and the firmware
 watchdog should disarm on its own. That is the behaviour worth verifying.
 """
@@ -122,7 +122,7 @@ def selftest() -> int:
     check(crc16(b"123456789") == 0x29B1,
           f"CRC matches standard vector (got 0x{crc16(b'123456789'):04X}, want 0x29B1)")
 
-    frame = encode(SET_MOTOR, bytes([2]) + struct.pack("<H", 250))
+    frame = encode(SET_MOTOR, bytes([2]) + struct.pack("<h", 250))
     check(len(frame) == 6 + 3, "frame length = overhead + payload")
     check(frame[0] == SYNC1 and frame[1] == SYNC2, "sync bytes present")
 
@@ -131,7 +131,12 @@ def selftest() -> int:
     check(len(out) == 1, "one frame decoded")
     check(out and out[0][0] == SET_MOTOR, "type round trips")
     check(out and out[0][1][0] == 2, "motor index round trips")
-    check(out and struct.unpack("<H", out[0][1][1:3])[0] == 250, "value round trips")
+    check(out and struct.unpack("<h", out[0][1][1:3])[0] == 250, "value round trips")
+
+    neg = encode(SET_MOTOR, bytes([5]) + struct.pack("<h", -300))
+    pn = Parser(); on = list(pn.feed(neg))
+    check(on and struct.unpack("<h", on[0][1][1:3])[0] == -300,
+          "negative (reverse) thrust round trips")
 
     bad = bytearray(frame)
     bad[5] ^= 0x01
@@ -212,15 +217,15 @@ def main() -> int:
         ser.write(encode(ARM))
         armed.set()
         time.sleep(0.2)
-        v = max(0, min(1000, int(args.value * 1000)))
-        ser.write(encode(SET_MOTOR, bytes([args.motor]) + struct.pack("<H", v)))
+        v = max(-1000, min(1000, int(args.value * 1000)))
+        ser.write(encode(SET_MOTOR, bytes([args.motor]) + struct.pack("<h", v)))
         time.sleep(1.0)
         ser.write(encode(DISARM))
         time.sleep(0.2)
         stop.set()
         return 0
 
-    print("commands: arm | disarm | m <index> <0..1> | state | quit")
+    print("commands: arm | disarm | m <index> <-1..1> | state | quit")
     try:
         while True:
             line = input("> ").strip().split()
@@ -236,9 +241,9 @@ def main() -> int:
             elif cmd == "state":
                 ser.write(encode(GET_STATE))
             elif cmd == "m" and len(line) == 3:
-                v = max(0, min(1000, int(float(line[2]) * 1000)))
+                v = max(-1000, min(1000, int(float(line[2]) * 1000)))
                 ser.write(encode(SET_MOTOR,
-                                 bytes([int(line[1])]) + struct.pack("<H", v)))
+                                 bytes([int(line[1])]) + struct.pack("<h", v)))
             else:
                 print("  ?")
     except (KeyboardInterrupt, EOFError):

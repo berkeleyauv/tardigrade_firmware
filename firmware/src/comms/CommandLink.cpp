@@ -57,8 +57,8 @@ void CommandLink::dispatch(uint32_t now_us, const VehicleState& state) {
                 break;
             }
             const uint8_t index = parser_.payload()[0];
-            const uint16_t raw = getU16(parser_.payload(), 1);
-            if (raw > 1000) {
+            const int16_t raw = getI16(parser_.payload(), 1);
+            if (raw < -1000 || raw > 1000) {
                 sendAck(type, false, AckReason::BadValue);
                 break;
             }

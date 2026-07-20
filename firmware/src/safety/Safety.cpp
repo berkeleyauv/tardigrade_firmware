@@ -50,11 +50,17 @@ bool Safety::commandMotor(uint8_t index, float value, uint8_t motor_count) {
     if (index >= motor_count || index >= kMaxMotors) {
         return false;
     }
-    if (!(value >= 0.0f)) {
-        return false;  // also rejects NaN, which would sail past value < 0
+    // Reject NaN explicitly: it compares false against everything, so it would
+    // slip through both clamps below and reach the ESC unmodified.
+    if (!(value >= -1.0f && value <= 1.0f)) {
+        return false;
     }
+    // Clamp magnitude, preserving direction — reverse thrust is legitimate on
+    // a bidirectional vehicle and must be limited, not discarded.
     if (value > test_limit_) {
         value = test_limit_;
+    } else if (value < -test_limit_) {
+        value = -test_limit_;
     }
     motors_.setMotor(index, value);
     return true;

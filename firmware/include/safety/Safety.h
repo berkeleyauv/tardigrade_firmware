@@ -16,18 +16,10 @@
 // Safety owns the motor sink so that tripping is not advisory. It stops the
 // motors itself rather than setting a flag and trusting somebody to read it.
 
+#include "core/IMotorSink.h"
 #include "core/types.h"
 
 namespace tardigrade {
-
-// Where motor commands land. MotorManager will implement this once ESCs exist;
-// until then anything that can print or drive a pin will do.
-class IMotorSink {
-public:
-    virtual ~IMotorSink() = default;
-    virtual void setMotor(uint8_t index, float value) = 0;
-    virtual void stopAll() = 0;
-};
 
 enum class DisarmReason : uint8_t {
     Commanded  = 0,  // the host asked
@@ -56,7 +48,9 @@ public:
     void disarm(DisarmReason reason);
 
     // Gate for motor-test commands. Returns false and leaves motors untouched
-    // unless armed and the link is alive. `value` is clamped to the test cap.
+    // unless armed and the link is alive. `value` is signed -1..+1; its
+    // MAGNITUDE is clamped to the test cap, keeping the sign so that reverse
+    // thrust on a bidirectional vehicle is limited rather than dropped.
     bool commandMotor(uint8_t index, float value, uint8_t motor_count);
 
     bool armed() const { return armed_; }

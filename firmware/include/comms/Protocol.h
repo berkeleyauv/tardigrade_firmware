@@ -36,7 +36,10 @@ enum class MsgType : uint8_t {
     Heartbeat = 0x01,
     Arm       = 0x02,
     Disarm    = 0x03,
-    SetMotor  = 0x04,  // [index:u8][value:u16 0..1000]
+    // [index:u8][value:i16 -1000..+1000] — signed thousandths of full thrust,
+    // 0 = stopped. Signed even on the hopcopter so that the value meaning
+    // "stop" is the same number on every vehicle. See MotorOutput in types.h.
+    SetMotor  = 0x04,
     GetState  = 0x05,
 
     // ---- vehicle -> host ----
@@ -77,5 +80,6 @@ void putI16(uint8_t* buf, size_t& offset, int16_t value);
 void putU32(uint8_t* buf, size_t& offset, uint32_t value);
 
 uint16_t getU16(const uint8_t* buf, size_t offset);
+int16_t getI16(const uint8_t* buf, size_t offset);
 
 }  // namespace tardigrade

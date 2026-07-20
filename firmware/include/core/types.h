@@ -139,10 +139,21 @@ struct ControlOutput {
 };
 
 // Final per-motor commands after mixing. Only [0, count) are meaningful.
+//
+// SIGNED, -1..+1, with 0 meaning STOPPED on every vehicle. The hopcopter's
+// propellers only ever spin one way, so it simply never commands a negative;
+// the robosub's thrusters are reversible and need the full range.
+//
+// One signed contract rather than a per-vehicle convention, because the
+// alternative puts "stopped" at a different number depending on the airframe —
+// and the value that means stop is the value Safety writes on every disarm,
+// every watchdog trip, and every emergency stop. Getting that wrong inverts the
+// failsafe into a maximum-thrust command, so it is worth spending a bit on the
+// hopcopter to keep the meaning of zero identical everywhere.
 struct MotorOutput {
     uint32_t timestamp_us = 0;
     uint8_t count = 0;
-    float value[kMaxMotors] = {};  // normalized 0..1 per motor
+    float value[kMaxMotors] = {};  // -1..+1 per motor; 0 = stopped
     bool armed = false;
 };
 

@@ -344,18 +344,25 @@ setInterval(() => {
 function cmdArm()    { send(frame(T.ARM));    log("→ ARM", "tx"); if (demo) { armed = true;  log("ACK ARM: accepted (Ok) [demo]", "ok"); } }
 function cmdDisarm() { send(frame(T.DISARM)); log("→ DISARM", "tx"); if (demo) { armed = false; log("ACK DISARM: accepted (Ok) [demo]", "ok"); } zeroSliders(); }
 function cmdMotor(i, frac) {
-  const v = Math.max(0, Math.min(1000, Math.round(frac * 1000)));
-  send(frame(T.SET_MOTOR, [i, v & 0xFF, v >> 8]));
+  // Signed thousandths, two's complement little-endian int16. Signed on both
+  // vehicles so that "0 means stopped" is the same on the wire everywhere.
+  const v = Math.max(-1000, Math.min(1000, Math.round(frac * 1000)));
+  const u = v & 0xFFFF;
+  send(frame(T.SET_MOTOR, [i, u & 0xFF, (u >> 8) & 0xFF]));
 }
 
 /* --------------------------- motor slider panels -------------------------- */
 const motorSendAt = {};
-function buildMotors(el, count, prefix) {
+// `bidir` gives the robosub's reversible thrusters a negative half. The
+// hopcopter's propellers cannot run backwards, so its sliders start at 0.
+// Range caps mirror Safety::test_limit_ (30%), which clamps magnitude and
+// keeps the sign.
+function buildMotors(el, count, prefix, bidir = false) {
   for (let i = 0; i < count; i++) {
     const row = document.createElement("div");
     row.className = "motor";
     row.innerHTML = `<label>${prefix}${i}</label>
-      <input type="range" min="0" max="30" step="0.5" value="0" data-m="${i}">
+      <input type="range" min="${bidir ? -30 : 0}" max="30" step="0.5" value="0" data-m="${i}">
       <output>0.0%</output>`;
     const slider = row.querySelector("input"), out = row.querySelector("output");
     slider.addEventListener("input", () => {
@@ -370,8 +377,8 @@ function buildMotors(el, count, prefix) {
     el.appendChild(row);
   }
 }
-buildMotors(document.getElementById("motorsHop"), 4, "M");
-buildMotors(document.getElementById("motorsSub"), 8, "T");
+buildMotors(document.getElementById("motorsHop"), 4, "M", false);
+buildMotors(document.getElementById("motorsSub"), 8, "T", true);
 function zeroSliders() {
   document.querySelectorAll(".motor input").forEach(s => {
     s.value = 0; s.dispatchEvent(new Event("input"));
