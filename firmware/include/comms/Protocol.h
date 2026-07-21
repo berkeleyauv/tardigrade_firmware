@@ -47,11 +47,17 @@ enum class MsgType : uint8_t {
     // failsafe owned by ExternalEstimator, exactly as the IMU is on the
     // hopcopter. Losing the operator must still disarm even while pose flows.
     Pose      = 0x06,
+    // Live tuning. SetParameter: [id:u16][value:f32]. GetParameters: empty, asks
+    // the vehicle to stream back every current value as Parameter frames so the
+    // ground station's controls start where the firmware actually is.
+    SetParameter  = 0x07,
+    GetParameters = 0x08,
 
     // ---- vehicle -> host ----
-    State = 0x80,      // see encodeState()
-    Ack   = 0x81,      // [echoed type:u8][accepted:u8][reason:u8]
-    Text  = 0x82,      // human-readable string, no NUL
+    State     = 0x80,  // see encodeState()
+    Ack       = 0x81,  // [echoed type:u8][accepted:u8][reason:u8]
+    Text      = 0x82,  // human-readable string, no NUL
+    Parameter = 0x83,  // [id:u16][value:f32] — one current parameter value
 };
 
 // Why a command was refused. Sent back in Ack so the UI can say something

@@ -69,6 +69,14 @@
   #raw { font: 11px var(--mono); color: var(--dim); height: 76px; overflow-y: auto; white-space: pre-wrap; }
   details summary { cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); }
   .banner { background: #3d1d1f; border: 1px solid var(--bad); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display: none; }
+  table.pid { border-collapse: collapse; width: 100%; max-width: 520px; }
+  table.pid th { font: 10px/1.4 sans-serif; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); text-align: left; padding: 4px 8px; }
+  table.pid td { padding: 3px 8px; }
+  table.pid td:first-child { font: 12px var(--mono); color: var(--accent); }
+  .pidextra { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
+  .pidextra label { font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  input[type=number] { width: 78px; background: #0d1117; color: var(--ink); border: 1px solid var(--edge); border-radius: 5px; padding: 4px 6px; font: 13px var(--mono); }
+  input[type=number]:focus { border-color: var(--accent); outline: none; }
 </style>
 </head>
 <body>
@@ -154,6 +162,25 @@
         <button id="btnStopSub">ZERO ALL</button>
       </div>
     </div>
+
+    <div class="panel" style="grid-column: 1 / -1">
+      <h2>PID tuning — changes send live to the FC</h2>
+      <table class="pid">
+        <thead><tr><th>axis</th><th>Kp</th><th>Ki</th><th>Kd</th></tr></thead>
+        <tbody id="pidRows"></tbody>
+      </table>
+      <div class="pidextra">
+        <label>Authority <input type="number" step="0.05" min="0" max="1" data-pid="0x40"></label>
+        <label>Depth setpoint z (m, −down) <input type="number" step="0.1" data-pid="0x50" data-unit="m"></label>
+        <label>Heading setpoint (deg) <input type="number" step="1" data-pid="0x51" data-unit="deg"></label>
+      </div>
+      <div class="row">
+        <button id="btnParamRead">Read from FC</button>
+        <span class="pill" id="pidHint">arm captures current depth/heading as the hold target</span>
+      </div>
+    </div>
+    <div class="panel"><h2>Depth — target vs actual</h2><canvas id="chartDepth" width="440" height="150" style="width:100%"></canvas></div>
+    <div class="panel"><h2>Heading — target vs actual</h2><canvas id="chartHeading" width="440" height="150" style="width:100%"></canvas></div>
   </div>
 </div>
 
@@ -164,8 +191,12 @@
 "use strict";
 /* ------------------------- protocol (mirror of Protocol.cpp) ------------- */
 const SYNC1 = 0xA7, SYNC2 = 0x5E, MAX_PAYLOAD = 64;
-const T = { HEARTBEAT:1, ARM:2, DISARM:3, SET_MOTOR:4, GET_STATE:5, STATE:0x80, ACK:0x81, TEXT:0x82 };
+const T = { HEARTBEAT:1, ARM:2, DISARM:3, SET_MOTOR:4, GET_STATE:5, POSE:6,
+            SET_PARAM:7, GET_PARAMS:8, STATE:0x80, ACK:0x81, TEXT:0x82, PARAM:0x83 };
 const TYPE_NAMES = Object.fromEntries(Object.entries(T).map(([k,v]) => [v,k]));
+// Parameter ids — must match firmware/include/control/Parameters.h.
+const P = { DEPTH:0x00, YAW:0x10, ROLL:0x20, PITCH:0x30,
+            KP:0, KI:1, KD:2, AUTHORITY:0x40, DEPTH_SP:0x50, HEADING_SP:0x51 };
 const ACK_REASONS = ["Ok","NotArmed","LinkLost","BadIndex","BadValue","NotPermitted"];
 
 function crc16(bytes) {
@@ -268,6 +299,7 @@ function connectWS() {
   ws.onopen = () => {
     document.getElementById("btnConnect").textContent = "Disconnect";
     log("server link open: " + url, "ok");
+    setTimeout(requestParams, 400);   // pull current PID values into the panel
   };
   ws.onmessage = ev => { for (const b of new Uint8Array(ev.data)) parser.feed(b, onFrame); };
   ws.onclose = () => { ws = null; document.getElementById("btnConnect").textContent = connectLabel(); log("server link closed"); };
@@ -284,6 +316,7 @@ async function connect() {
   document.getElementById("btnConnect").textContent = "Disconnect";
   log("port open @115200", "ok");
   readLoop();
+  setTimeout(requestParams, 400);   // pull current PID values into the panel
 }
 async function disconnect() {
   try {
@@ -352,6 +385,10 @@ function onFrame(type, p) {
         ok ? "ok" : "no");
   } else if (type === T.TEXT) {
     log("FC: " + new TextDecoder().decode(p), "in");
+  } else if (type === T.PARAM) {
+    if (p.length < 6) return;
+    const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+    paramInto(dv.getUint16(0, true), dv.getFloat32(2, true));
   }
 }
 
@@ -416,6 +453,80 @@ for (const [btn, fn] of [["btnArmHop", cmdArm], ["btnArmSub", cmdArm],
   document.getElementById(btn).onclick = fn;
 document.getElementById("btnStopHop").onclick = zeroSliders;
 document.getElementById("btnStopSub").onclick = zeroSliders;
+
+/* --------------------------- PID tuning (robosub) ------------------------- */
+const setp = { depth: NaN, heading: NaN };  // for the target-vs-actual charts
+
+function sendParam(id, value) {
+  const b = new Uint8Array(6), dv = new DataView(b.buffer);
+  dv.setUint16(0, id, true);
+  dv.setFloat32(2, value, true);
+  send(frame(T.SET_PARAM, Array.from(b)));
+}
+function requestParams() { if (realLink()) send(frame(T.GET_PARAMS)); }
+
+// Build the Kp/Ki/Kd rows with ids matching Parameters.h (channel | term).
+for (const [name, ch] of [["depth", P.DEPTH], ["yaw", P.YAW], ["roll", P.ROLL], ["pitch", P.PITCH]]) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${name}</td>` +
+    [P.KP, P.KI, P.KD].map(t => `<td><input type="number" step="0.05" data-pid="${ch | t}"></td>`).join("");
+  document.getElementById("pidRows").appendChild(tr);
+}
+
+function paramFromInput(inp) {
+  const v = parseFloat(inp.value);
+  if (!Number.isFinite(v)) return;
+  const id = parseInt(inp.dataset.pid);
+  const wire = inp.dataset.unit === "deg" ? v * Math.PI / 180 : v;  // heading sent in radians
+  sendParam(id, wire);
+  log(`→ param 0x${id.toString(16)} = ${v}`, "tx");
+  if (id === P.DEPTH_SP) setp.depth = v;
+  if (id === P.HEADING_SP) setp.heading = v;
+}
+document.querySelectorAll("[data-pid]").forEach(inp =>
+  inp.addEventListener("change", () => paramFromInput(inp)));
+
+// Incoming Parameter frame -> populate the matching field (unless the user is
+// editing it), so the panel starts at the firmware's real values.
+function paramInto(id, val) {
+  // Match by PARSED id: gain inputs carry decimal data-pid, the extras carry
+  // hex strings ("0x40"), and both must resolve to the same number.
+  const inp = [...document.querySelectorAll("[data-pid]")]
+    .find(e => parseInt(e.dataset.pid) === id);
+  if (inp && document.activeElement !== inp) {
+    const show = inp.dataset.unit === "deg" ? val * 180 / Math.PI : val;
+    inp.value = Math.round(show * 1000) / 1000;
+  }
+  if (id === P.DEPTH_SP) setp.depth = val;
+  if (id === P.HEADING_SP) setp.heading = val * 180 / Math.PI;  // store in deg
+}
+document.getElementById("btnParamRead").onclick = requestParams;
+
+// Measured trace + dashed setpoint line, auto-ranged to include both.
+function drawTuning(ctx, w, h, data, setpoint, color) {
+  ctx.clearRect(0, 0, w, h);
+  const vals = data.filter(Number.isFinite);
+  if (Number.isFinite(setpoint)) vals.push(setpoint);
+  if (!vals.length) return;
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 0.2) { const m = (hi + lo) / 2; lo = m - 0.1; hi = m + 0.1; }
+  const pad = (hi - lo) * 0.15; lo -= pad; hi += pad;
+  const y = v => h - (v - lo) / (hi - lo) * h;
+  if (Number.isFinite(setpoint)) {
+    ctx.strokeStyle = "#d29922"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, y(setpoint)); ctx.lineTo(w, y(setpoint)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+  let started = false;
+  data.forEach((v, i) => {
+    if (Number.isNaN(v)) { started = false; return; }
+    const x = i * w / (HIST_N - 1);
+    started ? ctx.lineTo(x, y(v)) : ctx.moveTo(x, y(v));
+    started = true;
+  });
+  ctx.stroke();
+}
 
 /* -------------------------------- tabs ----------------------------------- */
 const tabHop = document.getElementById("tabHop"), tabSub = document.getElementById("tabSub");
@@ -551,6 +662,10 @@ function render() {
     $("sZ").childNodes[0].nodeValue = fmt(telem.alt, 3);
     const cs = $("compassSub");
     drawCompass(cs.getContext("2d"), cs.width, cs.height, telem.yaw);
+    const cd = $("chartDepth");
+    drawTuning(cd.getContext("2d"), cd.width, cd.height, hist.alt, setp.depth, "#58d0ff");
+    const chh = $("chartHeading");
+    drawTuning(chh.getContext("2d"), chh.width, chh.height, hist.yaw, setp.heading, "#bc8cff");
   }
   lastRender = performance.now();
 }

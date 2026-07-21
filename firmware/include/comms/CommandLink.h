@@ -12,6 +12,7 @@
 
 #include "comms/JetsonLink.h"
 #include "comms/PacketParser.h"
+#include "core/IParameterSink.h"
 #include "core/types.h"
 #include "safety/Safety.h"
 
@@ -35,6 +36,10 @@ public:
     // Pose frames are silently ignored, which is correct for the hopcopter.
     void setJetsonLink(JetsonLink* jetson) { jetson_ = jetson; }
 
+    // Optional: live parameter tuning. Left unset, SetParameter is refused and
+    // GetParameters returns nothing.
+    void setParameterSink(IParameterSink* params) { params_ = params; }
+
     // Call every tick. Drains the input buffer and dispatches whole frames.
     // `state` is what a GetState request will be answered with.
     void update(uint32_t now_us, const VehicleState& state);
@@ -48,6 +53,7 @@ public:
 private:
     void dispatch(uint32_t now_us, const VehicleState& state);
     void sendAck(MsgType echoed, bool accepted, AckReason reason);
+    void sendParameter(uint16_t id, float value);
     void sendFrame(MsgType type, const uint8_t* payload, uint8_t len);
 
     Stream& io_;
@@ -55,6 +61,7 @@ private:
     PacketParser parser_;
     const VerticalEstimator* vertical_ = nullptr;
     JetsonLink* jetson_ = nullptr;
+    IParameterSink* params_ = nullptr;
     uint8_t motor_count_;
 };
 

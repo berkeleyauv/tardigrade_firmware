@@ -131,11 +131,17 @@ struct DesiredState {
     float climb_rate_mps = 0.0f;
 };
 
-// Controller output: desired torques/force before mixing to motors.
+// Controller output: a body-frame wrench (force + torque) before mixing to
+// motors. This is the general 6-DOF form the mixer maps onto thrusters.
+//
+// The quadcopter is the degenerate case: it uses force.z as collective thrust
+// and leaves force.x/y at zero, because propellers can only push along one body
+// axis. The robosub uses all six. One contract, so the mixer interface and the
+// controller seam are identical for both vehicles.
 struct ControlOutput {
     uint32_t timestamp_us = 0;
-    Vec3 torque;                 // roll/pitch/yaw effort, normalized -1..1
-    float thrust = 0.0f;         // normalized collective, 0..1
+    Vec3 force;   // body frame: x=surge, y=sway, z=heave. Normalized -1..1.
+    Vec3 torque;  // body frame: x=roll, y=pitch, z=yaw.  Normalized -1..1.
 };
 
 // Final per-motor commands after mixing. Only [0, count) are meaningful.

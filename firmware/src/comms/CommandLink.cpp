@@ -92,10 +92,43 @@ void CommandLink::dispatch(uint32_t now_us, const VehicleState& state) {
             sendState(state);
             break;
 
+        case MsgType::SetParameter: {
+            if (parser_.length() < 6 || params_ == nullptr) {
+                sendAck(type, false, AckReason::NotPermitted);
+                break;
+            }
+            const uint16_t id = getU16(parser_.payload(), 0);
+            const float value = getF32(parser_.payload(), 2);
+            const bool ok = params_->setParameter(id, value);
+            sendAck(type, ok, ok ? AckReason::Ok : AckReason::BadValue);
+            break;
+        }
+
+        case MsgType::GetParameters:
+            if (params_ != nullptr) {
+                const uint16_t n = params_->parameterCount();
+                for (uint16_t i = 0; i < n; ++i) {
+                    uint16_t id;
+                    float value;
+                    if (params_->parameterAt(i, id, value)) {
+                        sendParameter(id, value);
+                    }
+                }
+            }
+            break;
+
         default:
             sendAck(type, false, AckReason::NotPermitted);
             break;
     }
+}
+
+void CommandLink::sendParameter(uint16_t id, float value) {
+    uint8_t payload[6];
+    size_t n = 0;
+    putU16(payload, n, id);
+    putF32(payload, n, value);
+    sendFrame(MsgType::Parameter, payload, static_cast<uint8_t>(n));
 }
 
 void CommandLink::sendState(const VehicleState& state) {

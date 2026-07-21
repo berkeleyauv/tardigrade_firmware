@@ -16,14 +16,17 @@ MAX_PAYLOAD = 64
 
 # Host -> vehicle
 HEARTBEAT, ARM, DISARM, SET_MOTOR, GET_STATE, POSE = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06
+SET_PARAMETER, GET_PARAMETERS = 0x07, 0x08
 # Vehicle -> host
-STATE, ACK, TEXT = 0x80, 0x81, 0x82
+STATE, ACK, TEXT, PARAMETER = 0x80, 0x81, 0x82, 0x83
 
 POSE_FRAME_LEN = 54  # kPoseFrameLen
 
 TYPE_NAMES = {
     HEARTBEAT: "HEARTBEAT", ARM: "ARM", DISARM: "DISARM", SET_MOTOR: "SET_MOTOR",
-    GET_STATE: "GET_STATE", POSE: "POSE", STATE: "STATE", ACK: "ACK", TEXT: "TEXT",
+    GET_STATE: "GET_STATE", POSE: "POSE", SET_PARAMETER: "SET_PARAMETER",
+    GET_PARAMETERS: "GET_PARAMETERS", STATE: "STATE", ACK: "ACK", TEXT: "TEXT",
+    PARAMETER: "PARAMETER",
 }
 ACK_REASONS = {
     0: "Ok", 1: "NotArmed", 2: "LinkLost",
@@ -51,6 +54,28 @@ def encode(msg_type: int, payload: bytes = b"") -> bytes:
 def encode_set_motor(index: int, value: float) -> bytes:
     v = max(-1000, min(1000, int(round(value * 1000))))
     return encode(SET_MOTOR, bytes([index & 0xFF]) + struct.pack("<h", v))
+
+
+# Parameter ids — must match firmware/include/control/Parameters.h.
+P_DEPTH, P_YAW, P_ROLL, P_PITCH = 0x00, 0x10, 0x20, 0x30
+P_KP, P_KI, P_KD = 0, 1, 2
+P_AUTHORITY, P_DEPTH_SP, P_HEADING_SP = 0x40, 0x50, 0x51
+
+
+def encode_set_parameter(param_id: int, value: float) -> bytes:
+    return encode(SET_PARAMETER, struct.pack("<Hf", param_id & 0xFFFF, value))
+
+
+def encode_get_parameters() -> bytes:
+    return encode(GET_PARAMETERS)
+
+
+def decode_parameter(p: bytes):
+    """Parameter frame payload -> (id, value), or None if malformed."""
+    if len(p) < 6:
+        return None
+    pid, value = struct.unpack("<Hf", p[:6])
+    return pid, value
 
 
 def encode_pose(seq, pos, quat, linvel, angvel) -> bytes:
@@ -148,6 +173,17 @@ def _selftest() -> int:
     seq = struct.unpack("<H", po[0][1][:2])[0]
     px = struct.unpack("<f", po[0][1][2:6])[0]
     check(seq == 7 and abs(px - 1.0) < 1e-6, "pose seq + position round trip")
+
+    sp = encode_set_parameter(P_DEPTH | P_KP, 2.5)
+    so = list(Parser().feed(sp))
+    check(so and so[0][0] == SET_PARAMETER, "set_parameter decodes")
+    pid, val = struct.unpack("<Hf", so[0][1][:6])
+    check(pid == 0x00 and abs(val - 2.5) < 1e-6, "param id + value round trip")
+
+    pf2 = encode(PARAMETER, struct.pack("<Hf", P_YAW | P_KD, 0.4))
+    po2 = list(Parser().feed(pf2))
+    check(decode_parameter(po2[0][1]) == (0x12, struct.unpack("<f", struct.pack("<f", 0.4))[0]),
+          "parameter reply decodes")
 
     bad = bytearray(f); bad[5] ^= 1
     p2 = Parser()

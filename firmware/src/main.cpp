@@ -8,7 +8,8 @@
 // Vehicle selection happens ONCE here, at compile time, via a build flag — the
 // factory promised in docs/estimator.md. Everything below the IStateEstimator
 // seam (Safety, CommandLink, the control loop) is identical for both vehicles;
-// only the estimator, the motor hardware, and the pose source differ.
+// only the estimator, the motor hardware, the pose source, and the control law
+// differ.
 //
 //   default             -> hopcopter (onboard Mahony fusion, I2C IMU)
 //   -D VEHICLE_ROBOSUB   -> robosub  (external pose from the Jetson EKF)
@@ -17,7 +18,9 @@ using namespace tardigrade;
 
 #if defined(VEHICLE_ROBOSUB)
 #include "comms/JetsonLink.h"
+#include "control/RobosubController.h"
 #include "estimator/ExternalEstimator.h"
+#include "mixer/RobosubMixer.h"
 
 // Thruster pins and order from tardigrade_ws esp_thruster_map.json. No onboard
 // I2C IMU on the sub, so the I2C pins are free to drive thrusters.
@@ -27,6 +30,13 @@ const char* const kVehicleName = "ROBOSUB";
 
 JetsonLink jetson;
 ExternalEstimator vehicle_estimator(jetson);
+RobosubController controller;
+RobosubMixer mixer;
+
+// The controller owns its hold target and its output authority cap; both are
+// live-tunable over the parameter path. See RobosubController / Parameters.h.
+bool prev_armed = false;
+uint32_t last_ctrl_us = 0;
 #else
 #include "drivers/Icm20948.h"
 #include "estimator/OnboardEstimator.h"
@@ -50,13 +60,19 @@ CommandLink command_link(Serial, safety, kMotorCount);
 // knows which vehicle produced the estimate.
 IStateEstimator& estimator = vehicle_estimator;
 
+// Latches true the first time the estimate is healthy. The sensor-timeout
+// failsafe only fires after this — otherwise a bench robosub with no Jetson
+// (never healthy) would disarm itself the instant it armed, blocking manual
+// thruster checks.
+bool ever_healthy = false;
+
 constexpr uint32_t kPrintIntervalMs = 100;
 uint32_t last_print_ms = 0;
 
-// Per-vehicle sensor bring-up, kept out of the common flow below.
 static void beginSensors() {
 #if defined(VEHICLE_ROBOSUB)
     command_link.setJetsonLink(&jetson);
+    command_link.setParameterSink(&controller);  // live PID tuning
     Serial.println("waiting for Jetson pose over the ROS link...");
 #else
     if (imu.begin()) {
@@ -70,12 +86,52 @@ static void beginSensors() {
             Serial.println("gyro calibration incomplete - bias inaccurate");
         }
     } else {
-        // Not fatal: the link and both watchdogs still come up so the vehicle
-        // stays commandable and stoppable without an estimate.
         Serial.println("ICM-20948 not found - check wiring and ADR jumper");
     }
 #endif
     estimator.begin();
+}
+
+// Per-vehicle control law: estimate + setpoints -> mixed thruster commands.
+// The hopcopter's controller is not built yet, so its step is currently empty.
+static void controlStep(uint32_t now_us) {
+#if defined(VEHICLE_ROBOSUB)
+    const bool armed = safety.armed();
+    const bool healthy = estimator.healthy();
+    const VehicleState& s = estimator.state();
+
+    // Arm rising edge: capture "hold here". This is what makes the tuning
+    // workflow work — submerge, level off, arm, and it holds THIS depth and
+    // heading. (The setpoint can then be stepped live over the parameter path.)
+    if (armed && !prev_armed) {
+        controller.captureHold(s);
+        last_ctrl_us = now_us;
+        Serial.printf("HOLD engaged: depth z=% .2f m  heading=% .1f deg\n",
+                      s.altitude_m, s.yaw_rad * RAD_TO_DEG);
+    }
+    prev_armed = armed;
+
+    if (armed && healthy) {
+        const float dt = (now_us - last_ctrl_us) * 1e-6f;
+        last_ctrl_us = now_us;
+        if (dt <= 0.0f || dt > 0.2f) {
+            return;  // implausible gap; skip rather than kick the integrators
+        }
+        ControlOutput wrench;
+        controller.update(s, dt, wrench);  // authority applied inside
+        MotorOutput mo;
+        mixer.mix(wrench, mo);
+        for (uint8_t i = 0; i < mo.count; ++i) {
+            motors.setMotor(i, mo.value[i]);
+        }
+    } else {
+        // Not holding: keep integrators clean so the next arm starts fresh.
+        controller.reset();
+        last_ctrl_us = now_us;
+    }
+#else
+    (void)now_us;  // hopcopter controller: TODO
+#endif
 }
 
 void setup() {
@@ -84,13 +140,11 @@ void setup() {
     Serial.printf("Tardigrade FC starting (%s)...\n", kVehicleName);
 
     if (HardwareWatchdog::resetWasWatchdog()) {
-        // A silent reboot mid-test looks like a glitch unless something says so.
         Serial.println("!! previous boot ended in a WATCHDOG RESET !!");
     }
 
-    // Motors first, before anything that can fail or block. Floating ESC pins
-    // are undefined; begin() parks every channel at its stop pulse and holds it
-    // long enough for the ESCs to accept it as idle.
+    // Motors first: floating ESC pins are undefined. begin() parks every channel
+    // at its stop pulse and holds it long enough for the ESCs to accept idle.
     Serial.printf("Arming %u ESC outputs (holding stop)...\n", kMotorCount);
     if (!motors.begin()) {
         Serial.println("ESC output setup FAILED - check pins");
@@ -98,8 +152,7 @@ void setup() {
 
     beginSensors();
 
-    // Watchdog LAST: gyro calibration and the ESC hold block for seconds by
-    // design and would trip it before the control loop ever runs.
+    // Watchdog LAST: gyro calibration and the ESC hold block for seconds.
     if (HardwareWatchdog::begin(1)) {
         Serial.println("hardware watchdog armed (1 s)");
     } else {
@@ -111,20 +164,21 @@ void setup() {
 
 void loop() {
     const uint32_t now_us = micros();
-
-    // Feed the hardware watchdog once per pass. Reaching this line is the proof
-    // of life it waits for; a hang anywhere below resets the chip and the ESCs
-    // lose their signal.
     HardwareWatchdog::feed();
 
-    // Pull-based and non-blocking every pass.
     estimator.update(now_us);
-
-    // Drain the link, then judge it. update() runs unconditionally — the
-    // deadman fires on ABSENCE of traffic, so gating it on a received packet
-    // would guarantee it never trips on the link loss it exists for.
     command_link.update(now_us, estimator.state());
     safety.update(now_us);
+
+    // Sensor-timeout failsafe: once the estimate has been healthy, losing it
+    // while armed disarms. Both vehicles use the one mechanism.
+    if (estimator.healthy()) {
+        ever_healthy = true;
+    } else if (safety.armed() && ever_healthy) {
+        safety.disarm(DisarmReason::SensorTimeout);
+    }
+
+    controlStep(now_us);
 
     const uint32_t now_ms = millis();
     if (now_ms - last_print_ms < kPrintIntervalMs) {

@@ -22,9 +22,10 @@
 namespace tardigrade {
 
 enum class DisarmReason : uint8_t {
-    Commanded  = 0,  // the host asked
-    LinkLost   = 1,  // watchdog expired
-    NeverArmed = 2,
+    Commanded     = 0,  // the host asked
+    LinkLost      = 1,  // operator deadman expired
+    NeverArmed    = 2,
+    SensorTimeout = 3,  // the estimate went stale/unhealthy while armed
 };
 
 class Safety {
