@@ -50,8 +50,10 @@ enum class MsgType : uint8_t {
     // Live tuning. SetParameter: [id:u16][value:f32]. GetParameters: empty, asks
     // the vehicle to stream back every current value as Parameter frames so the
     // ground station's controls start where the firmware actually is.
-    SetParameter  = 0x07,
-    GetParameters = 0x08,
+    SetParameter    = 0x07,
+    GetParameters   = 0x08,
+    SaveParameters  = 0x09,  // persist current values to flash
+    ResetParameters = 0x0A,  // restore compiled defaults + clear flash
 
     // ---- vehicle -> host ----
     State     = 0x80,  // see encodeState()

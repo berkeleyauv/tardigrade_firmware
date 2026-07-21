@@ -1,12 +1,19 @@
 #include "control/RobosubController.h"
 
+#include <Preferences.h>
 #include <math.h>
-
-#include "control/Parameters.h"
+#include <stdio.h>
 
 namespace tardigrade {
 
 namespace {
+// NVS namespace + key scheme for saved gains. NVS keys are limited to 15 chars;
+// "g" + two hex digits of the parameter id stays well inside that.
+constexpr char kFlashNamespace[] = "tardigrade";
+void flashKey(uint16_t id, char* out, size_t n) {
+    snprintf(out, n, "g%02x", id & 0xFF);
+}
+
 // Shortest signed angular distance, wrapped to [-pi, pi]. Heading hold needs
 // this or crossing +/-180 deg would command a near-full-circle turn.
 inline float wrapPi(float a) {
@@ -20,9 +27,16 @@ inline float clampf(float v, float lo, float hi) {
 }  // namespace
 
 RobosubController::RobosubController() {
-    // Conservative starting gains — placeholders to be tuned in water. Integral
-    // and output limits kept low so a bad gain during bring-up cannot slam a
-    // thruster to full.
+    applyDefaults();
+    authority_ = 0.35f;
+}
+
+void RobosubController::applyDefaults() {
+    // THE CHECKED-IN BASELINE. This is the source of truth for the robosub's
+    // gains — flash-saved values only overlay these at boot, and a reset wipes
+    // flash back to exactly this. Conservative starting values to be tuned in
+    // water; integral/output limits kept low so a bad gain during bring-up
+    // cannot slam a thruster to full.
     depth_.setGains(2.0f, 0.10f, 1.5f);
     depth_.setIntegralLimit(0.25f);
     depth_.setOutputLimit(1.0f);
@@ -146,6 +160,56 @@ bool RobosubController::parameterAt(uint16_t index, uint16_t& id,
         case 14: id = param::kHeadingSetpoint; value = heading_setpoint_; return true;
         default: return false;
     }
+}
+
+void RobosubController::loadFromFlash() {
+    Preferences prefs;
+    if (!prefs.begin(kFlashNamespace, /*readOnly=*/true)) {
+        return;  // nothing saved yet
+    }
+    char key[8];
+    for (uint16_t i = 0; i < parameterCount(); ++i) {
+        uint16_t id;
+        float value;
+        if (!parameterAt(i, id, value) || !persistable(id)) {
+            continue;
+        }
+        flashKey(id, key, sizeof(key));
+        if (prefs.isKey(key)) {
+            setParameter(id, prefs.getFloat(key, value));
+        }
+    }
+    prefs.end();
+}
+
+bool RobosubController::saveParameters() {
+    Preferences prefs;
+    if (!prefs.begin(kFlashNamespace, /*readOnly=*/false)) {
+        return false;
+    }
+    char key[8];
+    for (uint16_t i = 0; i < parameterCount(); ++i) {
+        uint16_t id;
+        float value;
+        if (!parameterAt(i, id, value) || !persistable(id)) {
+            continue;
+        }
+        flashKey(id, key, sizeof(key));
+        prefs.putFloat(key, value);
+    }
+    prefs.end();
+    return true;
+}
+
+bool RobosubController::resetParameters() {
+    applyDefaults();
+    authority_ = 0.35f;
+    Preferences prefs;
+    if (prefs.begin(kFlashNamespace, /*readOnly=*/false)) {
+        prefs.clear();  // so the next boot uses the compiled defaults, not flash
+        prefs.end();
+    }
+    return true;
 }
 
 }  // namespace tardigrade

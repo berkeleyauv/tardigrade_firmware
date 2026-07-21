@@ -24,6 +24,7 @@
 // target of 2 m below the surface is z = -2.0.
 
 #include "control/IController.h"
+#include "control/Parameters.h"
 #include "control/Pid.h"
 #include "core/IParameterSink.h"
 #include "core/types.h"
@@ -42,6 +43,11 @@ public:
     // workflow.
     void captureHold(const VehicleState& state);
 
+    // Overlay any gains previously saved to flash on top of the compiled
+    // defaults. Call once at boot (setpoints are never persisted — they are
+    // captured on arm). No-op if nothing was saved.
+    void loadFromFlash();
+
     // Autonomous output scale, 0..1. A bring-up safety cap: keeps a bad gain
     // from slamming a thruster to full while tuning. Raise toward 1 with
     // confidence.
@@ -51,10 +57,17 @@ public:
     bool setParameter(uint16_t id, float value) override;
     uint16_t parameterCount() const override;
     bool parameterAt(uint16_t index, uint16_t& id, float& value) const override;
+    bool saveParameters() override;   // write gains + authority to flash
+    bool resetParameters() override;  // compiled defaults + wipe flash
 
 private:
+    void applyDefaults();                   // the checked-in baseline gains
     Pid* channel(uint16_t ch);              // maps a param channel to its Pid
     const Pid* channel(uint16_t ch) const;
+
+    // True for the values worth persisting: gains and authority, not the
+    // arm-captured setpoints (ids at or below kAuthority).
+    static bool persistable(uint16_t id) { return id <= param::kAuthority; }
 
     Pid depth_;
     Pid yaw_;

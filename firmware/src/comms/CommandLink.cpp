@@ -117,6 +117,30 @@ void CommandLink::dispatch(uint32_t now_us, const VehicleState& state) {
             }
             break;
 
+        case MsgType::SaveParameters: {
+            const bool ok = params_ != nullptr && params_->saveParameters();
+            sendAck(type, ok, ok ? AckReason::Ok : AckReason::NotPermitted);
+            break;
+        }
+
+        case MsgType::ResetParameters: {
+            const bool ok = params_ != nullptr && params_->resetParameters();
+            sendAck(type, ok, ok ? AckReason::Ok : AckReason::NotPermitted);
+            // Stream the restored values back so the ground station's fields
+            // update to the defaults it just reverted to.
+            if (ok) {
+                const uint16_t n = params_->parameterCount();
+                for (uint16_t i = 0; i < n; ++i) {
+                    uint16_t id;
+                    float value;
+                    if (params_->parameterAt(i, id, value)) {
+                        sendParameter(id, value);
+                    }
+                }
+            }
+            break;
+        }
+
         default:
             sendAck(type, false, AckReason::NotPermitted);
             break;

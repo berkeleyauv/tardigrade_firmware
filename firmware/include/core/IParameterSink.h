@@ -25,6 +25,15 @@ public:
     // Enumeration for read-back. `index` in [0, parameterCount()).
     virtual uint16_t parameterCount() const = 0;
     virtual bool parameterAt(uint16_t index, uint16_t& id, float& value) const = 0;
+
+    // Persist the current values to non-volatile storage (flash), so they
+    // survive a reboot. Default: unsupported. This is the session scratchpad —
+    // the checked-in constructor defaults remain the source of truth.
+    virtual bool saveParameters() { return false; }
+
+    // Re-apply the compiled defaults AND clear any saved values, so a bad save
+    // cannot brick every future boot. Default: unsupported.
+    virtual bool resetParameters() { return false; }
 };
 
 }  // namespace tardigrade

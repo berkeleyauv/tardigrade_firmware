@@ -176,8 +176,13 @@
       </div>
       <div class="row">
         <button id="btnParamRead">Read from FC</button>
+        <button id="btnParamSave">Save to flash</button>
+        <button id="btnParamReset">Reset to defaults</button>
+        <button id="btnParamDump">Copy code</button>
         <span class="pill" id="pidHint">arm captures current depth/heading as the hold target</span>
       </div>
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-top:10px;">constructor code — updates live</div>
+      <pre id="dumpOut" style="margin-top:4px; padding:10px; background:#0d1117; border:1px solid var(--edge); border-radius:6px; font:12px var(--mono); color:var(--good); white-space:pre; overflow-x:auto; cursor:pointer;" title="click to copy"></pre>
     </div>
     <div class="panel"><h2>Depth — target vs actual</h2><canvas id="chartDepth" width="440" height="150" style="width:100%"></canvas></div>
     <div class="panel"><h2>Heading — target vs actual</h2><canvas id="chartHeading" width="440" height="150" style="width:100%"></canvas></div>
@@ -192,7 +197,8 @@
 /* ------------------------- protocol (mirror of Protocol.cpp) ------------- */
 const SYNC1 = 0xA7, SYNC2 = 0x5E, MAX_PAYLOAD = 64;
 const T = { HEARTBEAT:1, ARM:2, DISARM:3, SET_MOTOR:4, GET_STATE:5, POSE:6,
-            SET_PARAM:7, GET_PARAMS:8, STATE:0x80, ACK:0x81, TEXT:0x82, PARAM:0x83 };
+            SET_PARAM:7, GET_PARAMS:8, SAVE_PARAMS:9, RESET_PARAMS:0x0A,
+            STATE:0x80, ACK:0x81, TEXT:0x82, PARAM:0x83 };
 const TYPE_NAMES = Object.fromEntries(Object.entries(T).map(([k,v]) => [v,k]));
 // Parameter ids — must match firmware/include/control/Parameters.h.
 const P = { DEPTH:0x00, YAW:0x10, ROLL:0x20, PITCH:0x30,
@@ -483,8 +489,10 @@ function paramFromInput(inp) {
   if (id === P.DEPTH_SP) setp.depth = v;
   if (id === P.HEADING_SP) setp.heading = v;
 }
-document.querySelectorAll("[data-pid]").forEach(inp =>
-  inp.addEventListener("change", () => paramFromInput(inp)));
+document.querySelectorAll("[data-pid]").forEach(inp => {
+  inp.addEventListener("change", () => paramFromInput(inp));  // send on commit
+  inp.addEventListener("input", renderDump);                  // refresh snippet live
+});
 
 // Incoming Parameter frame -> populate the matching field (unless the user is
 // editing it), so the panel starts at the firmware's real values.
@@ -499,8 +507,39 @@ function paramInto(id, val) {
   }
   if (id === P.DEPTH_SP) setp.depth = val;
   if (id === P.HEADING_SP) setp.heading = val * 180 / Math.PI;  // store in deg
+  renderDump();  // keep the snippet in step with values pushed from the FC
 }
 document.getElementById("btnParamRead").onclick = requestParams;
+document.getElementById("btnParamSave").onclick = () => { send(frame(T.SAVE_PARAMS)); log("→ save gains to flash", "tx"); };
+document.getElementById("btnParamReset").onclick = () => {
+  send(frame(T.RESET_PARAMS)); log("→ reset gains to defaults", "tx");
+  // FC streams the restored values back; also poll in case a frame is missed.
+  setTimeout(requestParams, 300);
+};
+
+// Constructor snippet, built client-side from the panel's current gain fields so
+// git stays the source of truth without hand-transcribing. It updates live as
+// you edit; the button and the snippet itself copy it to the clipboard.
+function buildDumpCode() {
+  const g = (ch, t) => {
+    const inp = [...document.querySelectorAll("[data-pid]")].find(e => parseInt(e.dataset.pid) === (ch | t));
+    const v = inp ? parseFloat(inp.value) : NaN;
+    return (Number.isFinite(v) ? v.toFixed(2) : "0.00") + "f";
+  };
+  const line = (name, ch) => `    ${name}_.setGains(${g(ch, P.KP)}, ${g(ch, P.KI)}, ${g(ch, P.KD)});`;
+  return "// paste into RobosubController::applyDefaults()\n" +
+    line("depth", P.DEPTH) + "\n" + line("yaw", P.YAW) + "\n" +
+    line("roll", P.ROLL) + "\n" + line("pitch", P.PITCH);
+}
+function renderDump() { document.getElementById("dumpOut").textContent = buildDumpCode(); }
+function copyDump() {
+  if (navigator.clipboard) navigator.clipboard.writeText(buildDumpCode()).then(
+    () => log("constructor code copied to clipboard", "ok"),
+    () => log("clipboard blocked — select the snippet to copy", "no"));
+}
+document.getElementById("btnParamDump").onclick = copyDump;
+document.getElementById("dumpOut").onclick = copyDump;  // click the snippet to copy
+renderDump();  // show it immediately, populated as values arrive
 
 // Measured trace + dashed setpoint line, auto-ranged to include both.
 function drawTuning(ctx, w, h, data, setpoint, color) {

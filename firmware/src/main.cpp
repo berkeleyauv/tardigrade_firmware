@@ -73,6 +73,7 @@ static void beginSensors() {
 #if defined(VEHICLE_ROBOSUB)
     command_link.setJetsonLink(&jetson);
     command_link.setParameterSink(&controller);  // live PID tuning
+    controller.loadFromFlash();  // overlay saved gains onto compiled defaults
     Serial.println("waiting for Jetson pose over the ROS link...");
 #else
     if (imu.begin()) {
