@@ -67,6 +67,7 @@ in this document lives in the Jetson bridge node and above it.
 | Expose PID gains/authority/setpoints as ROS 2 parameters; push edits to the ESP | **new** |
 | Expose Save/Reset as ROS services | **new** |
 | Expose Arm/Disarm as a ROS service | **new** |
+| Send continuous Heartbeat to the ESP while it reports armed | **new** — see §"Safety model" |
 | Expose motor test as a ROS topic | **new** |
 | Publish link health as diagnostics | **new** |
 
@@ -171,6 +172,12 @@ Foxglove Service Call panel → /tardigrade/save_parameters (Trigger)
 Foxglove Service Call panel → /tardigrade/set_armed (armed=true)
     → bridge sends Arm (0x02) → ESP's Safety::arm() → Acks
     → bridge returns SetArmed.Response(success, message)
+    → bridge starts sending Heartbeat every ~100ms to the ESP for as long
+      as it reports armed — NOT gated on any Foxglove client staying
+      connected. This is what keeps Safety::update()'s 300ms link-timeout
+      satisfied now that arming is a one-shot service call rather than a
+      continuous webapp heartbeat. See "Safety model" below — without this,
+      the vehicle would auto-disarm ~300ms after every Foxglove arm call.
 ```
 
 **Motor test (new):**
@@ -218,10 +225,24 @@ as an explicit pre-test check, not just this doc.
 
 **What's dropped from scope as a result:** the custom Foxglove
 presence-beacon extension panel, and the "does Desktop vs. Web behave
-differently" investigation. Neither is being built. **What's unaffected:**
-the hardware watchdog and the sensor-timeout failsafe stay exactly as built —
-they're independent of this decision and still fire regardless of what's on
-the operator's screen.
+differently" investigation. Neither is being built.
+
+**The deadman itself is not removed — its job changes.**
+`Safety::update()`'s 300 ms link-timeout is still fully active in firmware,
+unmodified. What changes is who feeds it: instead of a browser tab's
+heartbeat tied to one operator's attention, the bridge sends a continuous
+Heartbeat to the ESP for as long as it reports armed, regardless of which (if
+any) Foxglove client is currently connected — see the Arm/Disarm data flow
+above. The mechanism no longer protects against "the operator looked away" —
+the kill switch does that now — but it still protects against a *different*
+failure: if the bridge process or the whole Jetson dies or hangs, that
+heartbeat stops, and the ESP still auto-disarms within 300 ms. That's a real,
+useful property worth keeping — it's just no longer the primary safety
+mechanism.
+
+**Also unaffected:** the hardware watchdog and the sensor-timeout failsafe
+stay exactly as built — independent of this decision and still fire
+regardless of what's on the operator's screen.
 
 ## Example Foxglove layouts
 
@@ -253,6 +274,7 @@ for a recorded `.mcap` — no live connection, no Jetson required.
 | Bridge: sync ROS parameters from the ESP (not just to it) | new, moderate — the subtlety above |
 | Bridge: save/reset services | new, small |
 | Bridge: `/tardigrade/set_armed` service | new, small — reuses existing `SetArmed.srv` |
+| Bridge: continuous Heartbeat to ESP while armed | new, small — replaces the webapp's role in feeding `Safety::update()` |
 | Bridge: motor-test topic | new, small |
 | Bridge: diagnostics publishing | new, small |
 | Foxglove layouts (pilot/observer/playback) | new, no code — saved layout configs only |
