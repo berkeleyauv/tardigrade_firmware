@@ -67,9 +67,30 @@ add `Kd` to damp, add `Ki` last and sparingly.
 - The sensor-timeout failsafe disarms if pose is lost while armed, which cuts
   the controller and neutralises the thrusters.
 
-## Where the gains live
+## Where the gains live, and how to keep them
 
-Defaults are set in the `RobosubController` constructor. Live changes are **not
-yet persisted** — they reset to those defaults on reboot. When you settle on
-good values, copy them into the constructor (persistent parameter storage is a
-later addition).
+Two places, with different roles:
+
+- **Flash (the session scratchpad).** **Save to flash** on the panel persists the
+  current gains + authority to the ESP32's NVS; on boot they overlay the compiled
+  defaults, so a pool-side reset does not lose your tune. **Reset to defaults**
+  restores the compiled values and wipes flash if a session goes sideways.
+- **`RobosubController::applyDefaults()` in git (the source of truth).** This is
+  the checked-in baseline every board flashes from. Flash only *overlays* it.
+
+**Transfer your tune back to git — do not skip this.** The panel shows a
+**constructor-code snippet** that updates live as you edit:
+
+```cpp
+// paste into RobosubController::applyDefaults()
+    depth_.setGains(3.10f, 0.15f, 2.00f);
+    yaw_.setGains(1.40f, 0.02f, 0.55f);
+    roll_.setGains(0.80f, 0.00f, 0.25f);
+    pitch_.setGains(0.80f, 0.00f, 0.25f);
+```
+
+Click it (or **Copy code**) to copy, paste over
+[`applyDefaults()`](../firmware/src/control/RobosubController.cpp), commit, and
+reflash (`pio run -e robosub -t upload`). If the good gains only ever live in one
+board's flash, a reflash or a second sub silently disagrees — the git copy is
+what keeps every board identical.

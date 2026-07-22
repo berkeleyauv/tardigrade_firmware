@@ -11,6 +11,10 @@ carries one thing: the pose estimate the Jetson produces by fusing the VectorNav
 IMU with the ZED stereo camera. See [estimator.md](estimator.md) for why that
 fusion happens on the Jetson rather than the ESP32.
 
+For how the Jetson bridge exposes ESP telemetry and gains to Foxglove — on
+top of this same link, without changing it — see
+[foxglove_integration.md](foxglove_integration.md).
+
 ## Three names that get confused
 
 DDS, XRCE-DDS, and micro-ROS are three different layers. They are routinely used
