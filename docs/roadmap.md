@@ -1,70 +1,78 @@
 # Tardigrade Delivery Roadmap
 
-Target: **all four deliverables done by ~Jul 30, 2026** (~10 days from Jul 20).
-Assumes multiple pool sessions/week and focused team time. D4 is new scope
-added after the original three; it runs on a parallel track and does not
-push the target out — see the schedule below for why.
+Target: **D1–D4 done by ~Jul 30, 2026** (~10 days from Jul 20). D5 (Jetson
+control migration) is new scope layered on top — see its own window below;
+completing it fully is a stretch against Jul 30, and that's stated honestly
+rather than folded into the same deadline as everything else.
+
+Scope note: **hopcopter is out of this repository.** It's a separate vehicle
+in a separate repo going forward. Everything below is robosub-only.
 
 ## Deliverables
 
 | | Deliverable | Artifact |
 |---|---|---|
-| **D1** | Flashable robosub firmware | `.pio/build/robosub/firmware.bin` (`pio run -e robosub -t upload`) |
-| **D2** | Networked webapp | `tools/gcs_server.py` + `tools/dashboard.html` — retained as a bench/fallback tool during the transition; primary control moves to Foxglove once D4's control surface is proven |
-| **D3** | PID tuner + guide | dashboard PID panel + [pid_tuning.md](pid_tuning.md) (moves to Foxglove's Parameters panel once D4 lands — see below) |
+| **D1** | Flashable robosub firmware | `.pio/build/esp32dev/firmware.bin` (`pio run -t upload`) |
+| **D2** | Networked webapp | `tools/gcs_server.py` + `tools/dashboard.html` — transitional bench/fallback tool; primary control moves to Foxglove once D4's control surface is proven |
+| **D3** | PID tuner + guide | today: dashboard PID panel + [pid_tuning.md](pid_tuning.md). Once **D5** lands: Foxglove's Parameters panel talking to native ROS params on the Jetson controller node, gains in a versioned YAML — no ESP round-trip at all. |
 | **D4** | Foxglove observability, tuning **and control** layer | extended Jetson bridge node + `EspState.msg` + Foxglove layouts — see [foxglove_integration.md](foxglove_integration.md) |
+| **D5** | Jetson-side control (new) | PID + mixer as ROS nodes, gains in a versioned YAML, sim parity — see `tardigrade_ws/docs/jetson_control_architecture.md` |
 
 ## Status: what's already built
 
 Everything below is **written and compiles / passes its own test**, not yet
-proven on real hardware unless stated otherwise. This is a large amount of
-finished work — what's left is bring-up, tuning, and (for D4) wiring the
-bridge extensions, not new design.
+proven on real hardware unless stated otherwise.
 
-**Firmware** — drivers (`Icm20948`, `Vl53l0x`, `EscPwm`), estimators
-(`OnboardEstimator`/Mahony, `VerticalEstimator`/Kalman, `ExternalEstimator`),
-`Safety` (arming + operator deadman), `HardwareWatchdog`, `MotorManager`,
-the full wire protocol (`Protocol.h`, `PacketParser`, `CommandLink`,
-`JetsonLink`), the PID/mixer control chain (`Pid`, `RobosubController` with
-flash persistence via NVS, `RobosubMixer` — decoupling verified in Python),
-and the compile-time vehicle factory (`hopcopter`/`robosub` build envs, both
-green).
+**Firmware (robosub only, single build env)** — drivers (`EscPwm`), `Safety`
+(arming + operator deadman), `HardwareWatchdog`, `MotorManager`, the full wire
+protocol (`Protocol.h`, `PacketParser`, `CommandLink`, `JetsonLink`), the
+pose-consumption path (`ExternalEstimator`), and the PID/mixer control chain
+(`Pid`, `RobosubController` with flash persistence via NVS, `RobosubMixer` —
+decoupling verified in Python). The control chain is **transitional**: it
+migrates to the Jetson under D5, at which point it's removed from firmware —
+see the transitional notes in [estimator.md](estimator.md) and
+`jetson_control_architecture.md`.
 
-**Ground station** — `dashboard.html` (both vehicle tabs, live instruments,
-motor sliders, PID panel with the live constructor-code snippet, demo mode,
-dual WebSerial/WebSocket transport), `gcs_server.py` (serial hub, WebSocket
-relay, `--ros` pose injection), `pose_bridge.py`, and the shared
+**Ground station** — `dashboard.html` (live instruments, motor sliders, PID
+panel with the live constructor-code snippet, demo mode, dual
+WebSerial/WebSocket transport), `gcs_server.py` (serial hub, WebSocket relay,
+`--ros` pose injection), `pose_bridge.py`, and the shared
 `tardigrade_protocol.py` (self-test passing, cross-language wire compat
 confirmed against the firmware and the browser).
 
 **Docs** — `architecture.md`, `hardware.md`, `ros_link.md`,
-`ground_station.md`, `pid_tuning.md`, `bench_checklist.md`, and the new
-`foxglove_integration.md` spec.
+`ground_station.md`, `pid_tuning.md`, `bench_checklist.md`,
+`foxglove_integration.md`, and (in `tardigrade_ws`) `esp_bridge.py` (F1, ROS
+telemetry republish), `EspState.msg`, `jetson_control_architecture.md`.
 
-**Verified on real hardware so far: only the ICM-20948 + Mahony tilt test.**
-Everything else — ESCs, watchdog trip, ToF, the robosub control chain
-driving real thrusters, flash save/reset on real NVS, the WebSocket path
-live, and all of D4 — is compile-/protocol-/browser-verified only. That's
-the actual state of the remaining work.
+**Verified on real hardware so far: none of the robosub-specific pieces.**
+ESCs, watchdog trip, the control chain driving real thrusters, flash
+save/reset, the WebSocket path live, D4, and D5 are all compile-/protocol-/
+browser-verified only. (The one thing actually run on hardware — the
+ICM-20948 tilt test — was hopcopter-only and no longer applies to this repo.)
 
-## Safety model change (affects D4's scope)
+## Safety model
 
-The sub has a **physical kill switch**. That's now the documented safety
-backstop for live testing, not a software presence mechanism — so control
-(arm/disarm/motor test) is moving into Foxglove alongside tuning and
-telemetry, not staying webapp-only. See
-[foxglove_integration.md](foxglove_integration.md#safety-model-physical-kill-switch-not-a-software-presence-beacon)
-for the full reasoning. The one thing this makes non-optional: **someone is
-on kill-switch duty for every live test**, webapp or Foxglove. That belongs
-in [bench_checklist.md](bench_checklist.md) and [pid_tuning.md](pid_tuning.md)
-as an explicit step.
+The sub has a **physical kill switch** — the documented safety backstop for
+live testing, not a software presence mechanism. Control (arm/disarm/motor
+test) is moving into Foxglove alongside tuning and telemetry, not staying
+webapp-only. See
+[foxglove_integration.md](foxglove_integration.md#safety-model-physical-kill-switch-not-a-software-presence-beacon).
+The one thing this makes non-optional: **someone is on kill-switch duty for
+every live test**, webapp or Foxglove — belongs in
+[bench_checklist.md](bench_checklist.md) and [pid_tuning.md](pid_tuning.md) as
+an explicit step. This is unaffected by D5 — the deadman, watchdog, and
+authority cap stay on the ESP regardless of where the controller runs, and if
+anything the ESP becomes a *cleaner* independent safety layer guarding
+against bugs in the Jetson-side controller.
 
-## Schedule — two parallel tracks
+## Schedule — three tracks
 
-**Track A (hardware bring-up)** is the original plan, unchanged.
-**Track B (Foxglove/bridge)** is new, mostly Jetson-side software, and can
-run alongside Track A without blocking it — a teammate can build it while
-others do bench/pool work.
+**Track A (hardware bring-up)** — bench and pool work, unchanged in shape.
+**Track B (Foxglove/bridge)** — mostly Jetson-side software, parallel to A.
+**Track C (Jetson control migration, new)** — also mostly Jetson-side
+software; simplifies Track B's F2 once it lands (gains become native ROS
+params with no ESP round-trip).
 
 ### Track A — hardware bring-up
 
@@ -72,47 +80,60 @@ others do bench/pool work.
 |---|---|---|
 | **1 — Dry bench** | Jul 21–22 | Robosub flashes + boots; every thruster spins the correct direction; watchdog reset, deadman disarm, and sensor-timeout all observed firing; webapp connects locally. See [bench_checklist.md](bench_checklist.md). |
 | **2 — Network + Jetson** | Jul 22–24 | `gcs_server.py --ros` on the Jetson; a second laptop opens `http://<jetson>:8080/` over the LAN and sees live data; real EKF pose makes `ExternalEstimator` report `healthy`. |
-| **3 — Water + tuning** | Jul 24–29 | Depth signal validated; leveling→heading→depth tuned per [pid_tuning.md](pid_tuning.md); gains saved to flash and holding across a reset. |
+| **3 — Water + tuning** | Jul 24–29 | Depth signal validated; leveling→heading→depth tuned per [pid_tuning.md](pid_tuning.md); gains saved to flash and holding across a reset (on-ESP controller — see D5 for where tuning moves next). |
 | **4 — Finalize** | Jul 29–30 | Tuned gains pasted into `RobosubController::applyDefaults()` and committed; final `firmware.bin` cut. |
 
-### Track B — Foxglove / bridge (new)
+### Track B — Foxglove / bridge
 
 | Phase | Window | Depends on | Definition of done |
 |---|---|---|---|
-| **F1 — Bridge core (read-only)** | Jul 21–23 | nothing — starts immediately, parallel with Phase 1 | `EspState.msg` added to `tardigrade_interfaces`; bridge decodes `State` frames and publishes `/tardigrade/esp/state`; a minimal Foxglove layout shows live data off the same bench ESP as Phase 1. No water needed. |
-| **F2 — Tuning + control surface** | Jul 23–25 | **Phase 1 complete** | Gains as ROS 2 parameters with the ESP-is-source-of-truth sync; save/reset services; `/tardigrade/set_armed` service *plus* the bridge sending continuous Heartbeat to the ESP while armed (without this, the vehicle auto-disarms ~300ms after every Foxglove arm call — see foxglove_integration.md); motor-test topic; a pilot/tuning layout. Target: ready *before* Phase 3 starts, so it's usable during real tuning, not built after the fact. |
-| **F3 — Multi-client validation + kill-switch rehearsal** | Jul 25–27 | F2, Phase 2's network path | Two laptops connect simultaneously with different layouts and both see the same live data; arm/disarm/motor-test confirmed working correctly and repeatably via Foxglove; kill switch physically rehearsed with someone designated to hold it. |
-| **F4 — Recording + finalize + webapp retirement** | Jul 27–30 | F2, F3 | At least one real tuning session recorded via rosbag during Phase 3; playback confirmed on a laptop with no Jetson attached; the three standard layouts (pilot/observer/playback) saved for the team; webapp marked as retired-but-available-as-fallback. Converges with Phase 4. |
+| **F1 — Bridge core (read-only)** | Jul 21–23 | nothing — parallel with Phase 1 | `EspState.msg` + `esp_bridge` node publish `/tardigrade/esp/state`; a minimal Foxglove layout shows live data off the bench ESP. **Built** — see `tardigrade_ws/src/tardigrade_esp/tardigrade_esp/esp_bridge.py`; needs a real `colcon build` + on-hardware run to close out. |
+| **F2 — Control surface** | Jul 23–25 | **Phase 1 complete** | `/tardigrade/set_armed` service + continuous Heartbeat-while-armed; motor-test topic; a pilot layout. **Tuning parameters drop out of this phase if Track C lands first** — see below. |
+| **F3 — Multi-client validation + kill-switch rehearsal** | Jul 25–27 | F2, Phase 2's network path | Two laptops connect simultaneously with different layouts and both see the same live data; arm/disarm/motor-test confirmed working via Foxglove; kill switch physically rehearsed. |
+| **F4 — Recording + finalize + webapp retirement** | Jul 27–30 | F2, F3 | A real tuning session recorded via rosbag; playback confirmed with no Jetson attached; the standard layouts saved; webapp marked retired-but-available-as-fallback. |
 
-**Why F1 and F2 have different starting points.** F1 is read-only telemetry
-— it doesn't touch anything safety-critical, so it runs alongside Phase 1
-rather than waiting for it. F2 adds new control code (arm/disarm/motor-test)
-— that's deliberately sequenced *after* Phase 1 verifies the hardware, so
-any bug found while building/testing F2 is unambiguously a bridge-code
-problem, not a hardware-wiring problem hiding underneath a brand-new UI.
+### Track C — Jetson control migration (new)
 
-**If Track B slips, Track A is unaffected.** The webapp still works as a
-fallback until F2/F3 are proven — nothing in D1–D3 depends on D4 landing on
-time.
+| Phase | Window | Definition of done |
+|---|---|---|
+| **C1 — Controller + mixer nodes** | Jul 23–27 | PID controller and mixer run as Jetson ROS nodes on `/tardigrade/thrusters/cmd`, gains as ROS params loaded from a YAML. Runs alongside the existing ESP controller — not yet load-bearing. |
+| **C2 — Sim validation** | Jul 26–29 | Same nodes drive `tardigrade_sim`; tuned in sim, gains committed to the YAML. |
+| **C3 — Real-robot cutover** (stretch) | after Jul 29 | Jetson controller output validated against the proven on-ESP baseline from Track A; once trusted, `esp_bridge` extended to accept `/tardigrade/thrusters/cmd` directly; ESP stripped to the safe-actuator role (`RobosubController`, `ExternalEstimator`, `JetsonLink`, the `Pose` frame removed). |
+
+C1/C2 are realistic within the Jul 30 window; **C3 is honestly a stretch** — it
+needs a proven hardware baseline from Track A first (the same
+"verify-with-a-known-good-tool" principle as F2's Phase-1 dependency, one
+level deeper), so it can't start in earnest until Track A is solid, and it's
+the kind of cutover you don't rush the day before a deadline.
+
+**Track dependencies, plainly:** F1 needs nothing. F2 needs Phase 1. C1/C2
+need nothing (can start immediately). If C1/C2 land before F2, F2's tuning
+scope simplifies — no ESP-parameter-sync work, since gains are just Jetson
+ROS params by then. **If any track slips, the others are unaffected** — the
+webapp still works as a fallback, and the on-ESP controller still works until
+Track C's replacement is proven.
 
 ## Critical path & risks
 
-- **Phase 1 gates everything on Track A.** The most likely slip is a bad ESC
-  or an inverted thruster found on the bench. The checklist front-loads
-  exactly these.
+- **Phase 1 gates everything on Track A**, and now also gates Track C's C3.
+  The most likely slip is a bad ESC or an inverted thruster found on the
+  bench. The checklist front-loads exactly these.
 - **Depth sensor (decide in Phase 2).** Depth comes from the EKF `z`, fed by
   ZED visual odometry, which degrades underwater. If depth hold is jittery in
   Phase 3 the estimator is the likely cause, and a pressure sensor fused into
   the EKF is a bigger job than tuning. Decide whether the depth signal is
   trustworthy *before* going wet, not during.
-- **Kill switch confirmation, not a software design question anymore.**
-  Before retiring the webapp's arm/disarm role, confirm the kill switch is
-  tested and someone is explicitly designated to hold it during every
-  Foxglove-driven live test. This replaces the earlier open question about
-  software presence detection — it's now a procedural checklist item, not an
-  architecture decision.
-- **Hopcopter controller is not built.** Out of scope for these four
-  deliverables; noted so it isn't mistaken for done.
+- **Kill switch confirmation** — procedural, not architectural. Confirm it's
+  tested and someone is explicitly designated to hold it during every live
+  test, webapp or Foxglove.
+- **Don't let C1/C2 and Track A drift apart.** The Jetson controller in sim
+  and the on-ESP controller in the water are two implementations of the same
+  control law during the transition. If their gains diverge, "which one is
+  right" becomes a real question — keep the sim YAML and
+  `RobosubController::applyDefaults()` in sync until C3 makes one of them
+  obsolete.
+- **Hopcopter is out of scope for this repository entirely** — not "not built
+  yet," genuinely a separate vehicle in a separate repo now.
 
 ## What each deliverable needs to be "done"
 
@@ -121,10 +142,11 @@ time.
 - **D2:** a teammate on the same network opens the URL, sees live telemetry,
   can arm and tune — available as the fallback tool through the transition.
 - **D3:** someone can follow the guide, tune both axes, and land the values
-  in `applyDefaults()` — via the webapp during the transition, via Foxglove's
-  Parameters panel once D4 lands.
+  in a versioned place — `applyDefaults()` during the transition, the gains
+  YAML once D5 lands.
 - **D4:** the team can open Foxglove on any laptop, see live telemetry,
-  arm/disarm and test motors, tune gains through the Parameters panel with
-  save/reset working, and replay a recorded session. The webapp is retired as
-  the *required* tool once this is proven; the physical kill switch is the
-  safety backstop for live testing throughout.
+  arm/disarm and test motors, tune gains, and replay a recorded session. The
+  webapp is retired as the *required* tool once this is proven; the physical
+  kill switch is the safety backstop for live testing throughout.
+- **D5:** the same controller + mixer code, with the same gains, drives both
+  the simulator and the real robot. Tuning happens once, transfers everywhere.

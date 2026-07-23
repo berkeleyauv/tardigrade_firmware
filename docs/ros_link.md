@@ -182,12 +182,15 @@ ZED + VectorNav → robot_localization EKF → /tardigrade/state/odometry/filter
 ```
 
 Firmware modules: `JetsonLink` is the only thing that knows pose arrives over a
-wire; `ExternalEstimator` reads a plain `PoseSample` and applies the same
-freshness-timeout failsafe as the hopcopter's `OnboardEstimator`. Crucially,
-Pose frames do **not** feed Safety's operator deadman — the pose link and the
-operator link are independent failsafes, so losing the ground station still
-disarms even while pose streams (see the failsafe layering in
-[architecture.md](architecture.md)).
+wire; `ExternalEstimator` reads a plain `PoseSample` and applies a freshness-
+timeout failsafe. Crucially, Pose frames do **not** feed Safety's operator
+deadman — the pose link and the operator link are independent failsafes, so
+losing the ground station still disarms even while pose streams (see the
+failsafe layering in [architecture.md](architecture.md)).
+
+Transitional: this whole link retires once control moves to the Jetson (see
+`tardigrade_ws/docs/jetson_control_architecture.md`) — the Jetson already has
+the pose it's fusing, so it stops needing to send it back to the ESP.
 
 Host tooling lives in `tools/`: `tardigrade_protocol.py` (one shared wire
 implementation), `pose_bridge.py` (autonomy-only), and `gcs_server.py --ros`

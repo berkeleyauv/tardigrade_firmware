@@ -1,8 +1,14 @@
 # Ground Station
 
+**Transitional tool.** [Foxglove](foxglove_integration.md) is the primary
+observability/tuning/control layer going forward; this dashboard is retained
+as a bench/fallback tool during the transition — see
+[roadmap.md](roadmap.md)'s D2. It's robosub-only (hopcopter is a separate
+repo now).
+
 The dashboard ([tools/dashboard.html](../tools/dashboard.html)) shows attitude,
-heading, ToF, and telemetry, and drives arm/disarm, per-motor tests, and (later)
-PID tuning. It runs two ways depending on where the ESP is plugged in.
+heading, and telemetry, and drives arm/disarm, per-motor tests, and PID
+tuning. It runs two ways depending on where the ESP is plugged in.
 
 ## Which mode do I want?
 
@@ -30,7 +36,7 @@ why a plain file won't work when the ESP is on a different machine.
 pip install aiohttp pyserial
 ```
 
-**Every session — hopcopter, or robosub without pose injection:**
+**Every session (without pose injection):**
 
 ```bash
 cd tardigrade_firmware/tools

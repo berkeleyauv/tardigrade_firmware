@@ -45,8 +45,8 @@ Two options:
   instrument with no hardware attached. Nothing is transmitted.
 - **Connect** — Chrome shows a port picker; choose the ESP32 (115200 baud is
   set by the page). Telemetry starts immediately via `GET_STATE` polling.
-- Tabs: **HOPCOPTER** (attitude, heading, ToF A/B, altitude/v-speed, 4 motor
-  sliders, live charts) and **ROBOSUB** (heading, pose, 8 thruster sliders).
+- Single robosub view: heading compass, pose/depth cards, 8 thruster sliders,
+  PID panel with live constructor-code snippet, target-vs-actual charts.
 - **ARM** before motor sliders do anything; every command is acknowledged in
   the Events log, including the refusal reason when the firmware says no.
 - The **Raw serial text** panel shows the firmware's printf output, which

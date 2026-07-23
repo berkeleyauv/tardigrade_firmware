@@ -1,21 +1,12 @@
 #pragma once
 //
-// IStateEstimator — THE abstraction seam for supporting multiple vehicles.
+// IStateEstimator — the seam between the pose source and the rest of the stack.
 //
-// Every vehicle must produce a VehicleState; they just reach it differently:
-//
-//   * Hopcopter  -> OnboardEstimator: reads an IImuSource (raw accel/gyro from
-//                   the ICM-20948 over I2C) and runs onboard fusion
-//                   (Mahony/Madgwick) to compute attitude.
-//
-//   * Robosub    -> ExternalEstimator: the Jetson already fused the VectorNav
-//                   IMU and ZED stereo camera into a pose estimate; this
-//                   subscriber copies that fused solution (received over a ROS
-//                   link) straight into VehicleState. No onboard fusion.
-//
-// The Controller, Safety, and Telemetry modules depend ONLY on this interface
-// and on VehicleState — they never learn which vehicle they are running on.
-// Selection happens once at boot (build flag / Parameter) via a factory.
+// The robosub's implementation is ExternalEstimator: the Jetson fuses the
+// VectorNav IMU and ZED stereo camera into a pose (robot_localization EKF) and
+// streams it over the link; the estimator copies that solution into
+// VehicleState. No onboard fusion. Controller, Safety, and Telemetry depend
+// ONLY on this interface and VehicleState, never on where the pose came from.
 //
 // Timing contract: update() is PULL-BASED and MUST NOT block. The fixed-rate
 // loop calls it every tick. If no fresh sample is available (common on the

@@ -8,10 +8,10 @@
 // Safety and Telemetry cannot tell this apart from the hopcopter's onboard
 // Mahony filter — see docs/estimator.md.
 //
-// It reads a JetsonLink (the transport) and applies the SAME freshness contract
-// as OnboardEstimator: update() never blocks, reuses the last pose when nothing
-// new has arrived, and reports healthy() == false once the pose has gone stale,
-// which trips Safety's sensor-timeout failsafe. One mechanism, both vehicles.
+// It reads a JetsonLink (the transport) and applies a freshness contract:
+// update() never blocks, reuses the last pose when nothing new has arrived, and
+// reports healthy() == false once the pose has gone stale, which trips Safety's
+// sensor-timeout failsafe.
 
 #include "comms/JetsonLink.h"
 #include "core/types.h"

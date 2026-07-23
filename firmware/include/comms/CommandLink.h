@@ -20,17 +20,9 @@ class Stream;  // Arduino
 
 namespace tardigrade {
 
-class VerticalEstimator;
-
 class CommandLink {
 public:
     CommandLink(Stream& io, Safety& safety, uint8_t motor_count);
-
-    // Optional: lets State frames carry the raw ToF ranges. Left unset, those
-    // fields report 0xFFFF ("no sensor") and everything else works unchanged.
-    void setVerticalEstimator(const VerticalEstimator* vertical) {
-        vertical_ = vertical;
-    }
 
     // Optional: route inbound Pose frames (robosub) to this link. Left unset,
     // Pose frames are silently ignored, which is correct for the hopcopter.
@@ -59,7 +51,6 @@ private:
     Stream& io_;
     Safety& safety_;
     PacketParser parser_;
-    const VerticalEstimator* vertical_ = nullptr;
     JetsonLink* jetson_ = nullptr;
     IParameterSink* params_ = nullptr;
     uint8_t motor_count_;

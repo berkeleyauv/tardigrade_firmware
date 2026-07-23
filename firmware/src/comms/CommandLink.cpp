@@ -3,8 +3,6 @@
 #include <Arduino.h>
 #include <math.h>
 
-#include "estimator/VerticalEstimator.h"
-
 namespace tardigrade {
 
 namespace {
@@ -173,13 +171,6 @@ void CommandLink::sendState(const VehicleState& state) {
     if (state.altitude_valid) flags |= kFlagAltitudeOk;
     if (!safety_.linkLost())  flags |= kFlagLinkOk;
     payload[n++] = flags;
-
-    // Raw ToF ranges, mm. 0xFFFF = no sensor / no recent reading — the ground
-    // station shows the dropout instead of a stale number.
-    for (uint8_t i = 0; i < kMaxRangeSensors; ++i) {
-        putU16(payload, n,
-               vertical_ != nullptr ? vertical_->lastRangeMm(i) : 0xFFFF);
-    }
 
     sendFrame(MsgType::State, payload, static_cast<uint8_t>(n));
 }

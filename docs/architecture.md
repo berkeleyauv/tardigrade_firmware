@@ -54,9 +54,9 @@ Modules
           register maps); it is not plug-and-play and does not auto-detect what
           is wired where — that knowledge is fixed, because the mixer depends on
           which motor is on which pin. The swap-the-sensor abstraction we
-          actually need lives in the driver interfaces (IImuSource,
-          IRangeSensor, IMotorSink), not here. The empty src/hal/ directory is a
-          transfer leftover, not pending work. See docs/hardware.md.
+          actually need lives in the driver interfaces (IMotorSink), not here.
+          The empty src/hal/ directory is a transfer leftover, not pending
+          work. See docs/hardware.md.
     - Drivers
         - Purpose: Understanding the hardware
         - owns IMU, TOF, ESC, Battery, LED, etc.
@@ -96,12 +96,14 @@ harmless condition or miss a real fault.
 
 | Layer | Detects | Window | Action |
 |---|---|---|---|
-| `Icm20948::healthy()` | IMU stopped responding | 100 ms | reports unhealthy |
-| `Vl53l0x::healthy()` | ToF stopped responding | 200 ms | reports unhealthy |
-| `VerticalEstimator` (`stale_`) | no usable range reading | 500 ms | `altitude_valid` false |
-| `OnboardEstimator` (`stale_`) | state estimate gone stale | 50 ms | `healthy()` false |
+| `ExternalEstimator` (`stale_`) | Jetson pose gone stale | 100 ms | `healthy()` false |
 | `Safety` link deadman | ground station gone | 300 ms | disarm + stop motors |
 | `HardwareWatchdog` (TWDT) | the control loop itself hung | 1 s | reset the chip |
+
+(Transitional: once control moves to the Jetson — see
+tardigrade_ws/docs/jetson_control_architecture.md — the pose link and
+`ExternalEstimator`'s row retire with it; the ESP keeps the deadman and
+watchdog regardless, since those protect the actuator layer directly.)
 
 Two rules follow from the shape of this, and both are easy to break by
 accident:
@@ -116,10 +118,10 @@ accident:
    must not be reported as a failed sensor, or the vehicle failsafes at the top
    of every hop.
 
-The last row is different in kind from the others. Layers 1-5 are code inside
-loop(); if loop() stops advancing they all fail silently and simultaneously.
-Plausible causes are ordinary, not exotic — an I2C slave holding SDA low locks
-up the Wire library, and three devices share that bus.
+The last row is different in kind from the other two. Both of them are code
+inside loop(); if loop() stops advancing they fail silently and simultaneously.
+Plausible causes are ordinary, not exotic — the serial ISR wedging, a stalled
+write, or any of the usual ways an embedded loop can hang.
 
 That matters because the ESCs are driven by the LEDC peripheral, which generates
 its waveform in hardware. A hung CPU does not stop the pulse train: LEDC keeps

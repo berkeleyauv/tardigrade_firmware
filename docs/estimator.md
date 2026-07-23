@@ -2,97 +2,71 @@
 
 ## Purpose
 
-Turn sensor data into the vehicle's best estimate of its own state
-(`VehicleState`: orientation quaternion, roll/pitch/yaw, angular velocity,
-and — later — altitude).
+Turn the Jetson's fused pose into the robot's `VehicleState` (orientation
+quaternion, roll/pitch/yaw, angular velocity, depth, vertical velocity).
 
-The estimator is the only module that knows how attitude is computed. The
-Controller, Safety, and Telemetry modules consume `VehicleState` and never
-learn where it came from.
+The estimator is the only module that knows where the pose came from. Safety
+and Telemetry consume `VehicleState` and never learn the source.
 
-## The core decision: abstract at the estimator output, not the IMU
+## Transitional note
 
-Tardigrade must run on two very different vehicles:
+This document describes the **current** on-ESP path: the ESP receives the
+Jetson's fused pose and holds it in `VehicleState` for the on-ESP controller.
+Control is migrating to a Jetson ROS node (see
+`tardigrade_ws/docs/jetson_control_architecture.md`), and once that lands the
+Jetson no longer needs to send pose to the ESP at all — it already has it. At
+that point `ExternalEstimator`, `JetsonLink`, the `Pose` frame, and this
+document retire; the ESP becomes a pure actuator with no `VehicleState`
+concept. Until then, this is the accurate, working path, and nothing here
+should be treated as legacy prematurely.
 
-| | Hopcopter | Robosub |
-|---|---|---|
-| Sensor | SparkFun ICM-20948 9DoF IMU (accel + gyro) | VectorNav IMU + ZED stereo camera |
-| Connection | Chip → ESP32 (I2C / Qwiic) | Sensors → Jetson → ESP32 (ROS link) |
-| Where fusion happens | **On the ESP32** | **On the Jetson**, fusing IMU + visual odometry |
-| What the ESP32 receives | Raw accel/gyro | A fully-fused pose estimate |
+## Why fusion happens on the Jetson, not the ESP
 
-These differ in **where sensor fusion happens**, not just in which chip is
-used. That is why the abstraction seam is `IStateEstimator` → `VehicleState`,
-**not** the raw IMU.
+The pose comes from the VectorNav IMU + ZED stereo camera, fused by
+`robot_localization`'s EKF **on the Jetson**. The ESP never sees raw sensor
+data — only the finished pose. Re-running fusion on the ESP would mean
+discarding the EKF's visual odometry and reconstructing a worse estimate from
+scratch, for no benefit: the Jetson's filter is better than anything the ESP32
+can run, and it's already running.
 
-If we abstracted at the raw-IMU level instead, the Robosub path would have to
-discard the Jetson's fused pose and re-run a crude Mahony filter on the ESP32,
-using only the VectorNav's raw output and throwing away the ZED's visual
-odometry entirely — worse accuracy, added latency, and pointless, since the
-Jetson's filter is far better than anything the ESP32 can run.
+This is why the abstraction seam is `IStateEstimator` → `VehicleState`, not a
+raw-sensor interface — the ESP only ever needs to consume a finished estimate.
 
-## Interfaces
+## Interface
 
-Two layered contracts, matching the Drivers-vs-Estimator split in
-[architecture.md](architecture.md):
+- **`IStateEstimator`** (`firmware/include/estimator/IStateEstimator.h`) —
+  produces `VehicleState`. `update()` is pull-based and must never block; the
+  fixed-rate loop calls it every tick.
 
-- **`IImuSource`** (driver layer, `firmware/include/drivers/IImuSource.h`) —
-  raw accelerometer + gyroscope chips only (the hopcopter's ICM-20948).
-  Produces `ImuData`. The Robosub / Jetson path does **not** implement this.
-
-- **`IStateEstimator`** (estimator layer,
-  `firmware/include/estimator/IStateEstimator.h`) — produces `VehicleState`.
-  This is the seam both vehicles satisfy.
-
-## Implementations
+## Implementation
 
 ```
-Hopcopter:  Icm20948 (IImuSource) ──► OnboardEstimator (Mahony) ──► VehicleState
-Robosub:    JetsonLink ──► ExternalEstimator (passthrough)      ──► VehicleState
+JetsonLink ──► ExternalEstimator (passthrough) ──► VehicleState
 ```
 
-- **`OnboardEstimator`** — reads an `IImuSource` (ICM-20948), runs onboard
-  fusion (Mahony or Madgwick), fills `VehicleState`.
-- **`ExternalEstimator`** — receives the fused pose estimate from the Jetson
-  link and copies the solution straight into `VehicleState`. No onboard fusion.
-
-Selection happens once at boot via a factory keyed off a build flag
-(`-D VEHICLE_HOPCOPTER` / `-D VEHICLE_ROBOSUB`) or a `Parameter`.
+- **`ExternalEstimator`** — receives the fused pose from `JetsonLink` and
+  copies it straight into `VehicleState`. No fusion, no filtering.
 
 ## Timing and health
 
-- `update()` is **pull-based and must never block.** The fixed-rate loop calls
-  it every tick.
-- The I2C path delivers a fresh sample on (nearly) every tick. The Jetson path
-  is **asynchronous** — pose messages arrive at the EKF's publish rate
-  (the robot_localization filter in tardigrade_ws runs at **30 Hz**, far slower
-  than the control loop and slower than the VectorNav's own 800 Hz), independent
-  of the loop. When no new message is available, the estimator reuses its last
-  `VehicleState`.
-- Each estimator tracks `last_valid_us`. If
+- The Jetson path is **asynchronous** — pose messages arrive at the EKF's
+  publish rate (the `robot_localization` filter in `tardigrade_ws` runs at
+  **30 Hz**, independent of the ESP's loop rate). When no new message is
+  available, the estimator reuses its last `VehicleState`.
+- `ExternalEstimator` tracks `last_valid_us`. If
   `now_us - last_valid_us > freshness_timeout`, `healthy()` returns `false`,
-  which trips the Safety module's sensor-timeout failsafe. Both vehicles use
-  this same mechanism — a payoff of the shared interface.
+  which trips `Safety`'s sensor-timeout failsafe.
 
-## Link protocol (Robosub)
+## Link protocol
 
-The Jetson → ESP32 pose stream rides a **ROS link**: the Jetson publishes the
-fused pose on a topic and the ESP32 subscribes as a micro-ROS node, handing each
-message to `ExternalEstimator`.
+The Jetson → ESP pose stream rides the ground-link's binary protocol: the
+Jetson publishes the fused pose on a ROS topic, a Jetson-side bridge repacks
+it into a compact `Pose` frame, and `JetsonLink` decodes it on the ESP side.
 
 `JetsonLink` owns that transport and `ExternalEstimator` stays transport-
-agnostic: it consumes whatever pose the link last delivered and applies the same
-`last_valid_us` freshness check as the hopcopter path. The estimator seam only
-requires that a fused pose lands in `VehicleState`, so the transport choice —
-micro-ROS or a leaner custom bridge — stays cheap to reverse.
+agnostic: it consumes whatever pose the link last delivered and applies the
+`last_valid_us` freshness check above.
 
-See **[ros_link.md](ros_link.md)** for how DDS, XRCE-DDS, and micro-ROS relate,
-which process runs on which machine, the bandwidth and QoS constraints, and the
-fallback option.
-
-## Build order
-
-Implement `OnboardEstimator` first and close the hopcopter control loop before
-building `ExternalEstimator` / `JetsonLink`. The Robosub path reuses the same
-`IStateEstimator` contract, so nothing is wasted by doing it second — and the
-controller is proven before the Jetson link is added as a variable.
+See **[ros_link.md](ros_link.md)** for how DDS, XRCE-DDS, and micro-ROS
+relate, which process runs on which machine, the bandwidth/QoS constraints,
+and why a plain serial bridge was chosen over micro-ROS.

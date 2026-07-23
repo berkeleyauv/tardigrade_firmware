@@ -17,7 +17,7 @@ On the robosub it also injects pose: with --ros it subscribes to the EKF's
 filtered odometry and writes Pose frames onto the same serial link, so the ESP's
 ExternalEstimator is fed without a second process fighting for the port.
 
-  # hopcopter or bench (no ROS):
+  # bench (no ROS):
   python3 gcs_server.py --serial /dev/ttyUSB0
 
   # robosub on the Jetson, injecting pose from the EKF:

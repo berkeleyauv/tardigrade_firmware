@@ -16,7 +16,7 @@ deliberate: failsafes are proven before any thruster is allowed to spin.
 
 ## Stage 0 — Prep
 
-- [ ] Firmware builds clean: `pio run -e robosub`
+- [ ] Firmware builds clean: `pio run`
 - [ ] ESCs wired to pins **21, 19, 27, 18, 5, 14, 12, 26** (thrusters 0–7 = slots
       1–8 of `esp_thruster_map.json`)
 - [ ] ESC power rail separate from the ESP logic supply; common ground
@@ -24,7 +24,7 @@ deliberate: failsafes are proven before any thruster is allowed to spin.
 
 ## Stage 1 — Flash & boot
 
-- [ ] Flash: `pio run -e robosub -t upload`
+- [ ] Flash: `pio run -t upload`
 - [ ] Open the monitor: `pio device monitor -b 115200`
 - [ ] Boot banner reads `Tardigrade FC starting (ROBOSUB)...`
 - [ ] `Arming 8 ESC outputs (holding stop)...` prints; ESCs beep their arm tone

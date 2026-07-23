@@ -6,10 +6,21 @@ How Foxglove fits around the existing ESP ↔ Jetson bridge: every topic,
 parameter, and service; who talks to whom; and how multiple simultaneous
 operators/observers see the same live system.
 
-This spec assumes the decision already made: **the ESP is not changing.**
-No micro-ROS, no firmware changes, no protocol changes. Foxglove becomes the
-full operator interface — observability, tuning, **and control**
-(arm/disarm/motor test) — by extending the existing Jetson bridge node.
+This spec assumes the decision already made: **the ESP is not changing** *for
+the scope of this document*. No micro-ROS, no firmware changes, no protocol
+changes. Foxglove becomes the full operator interface — observability,
+tuning, **and control** (arm/disarm/motor test) — by extending the existing
+Jetson bridge node.
+
+A separate, later decision moves the PID controller itself onto the Jetson
+(`tardigrade_ws/docs/jetson_control_architecture.md`) — that one *does*
+eventually change the ESP (strips it to a safe-actuator role). If that lands
+first, gain tuning stops being a serial round-trip through this bridge
+entirely — gains just become native ROS parameters on the Jetson controller
+node, and this spec's tuning-parameter plumbing (the `SetParameter`
+sync/save/reset section) becomes unnecessary. Arm/disarm/motor-test stay as
+described here either way, since those are physical actuator commands to the
+ESP regardless of where the controller runs.
 
 **Safety model:** the sub has a **physical kill switch**, and that is the
 safety backstop for live testing — not a software presence mechanism. Earlier

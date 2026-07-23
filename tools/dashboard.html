@@ -96,45 +96,8 @@
   <span class="pill" id="pillCrc">crc err: 0</span>
 </header>
 
-<div class="tabs">
-  <button id="tabHop" class="active">HOPCOPTER</button>
-  <button id="tabSub">ROBOSUB</button>
-</div>
-
-<!-- ============================= HOPCOPTER ============================= -->
-<div id="viewHop">
-  <div class="grid">
-    <div class="panel"><h2>Attitude</h2><canvas id="horizon" class="inst" width="220" height="220"></canvas></div>
-    <div class="panel"><h2>Heading</h2><canvas id="compassHop" class="inst" width="220" height="220"></canvas></div>
-    <div class="panel">
-      <h2>Vehicle state</h2>
-      <div class="cards">
-        <div class="card"><div class="k">Roll</div><div class="v" id="hRoll">—<span class="u">°</span></div></div>
-        <div class="card"><div class="k">Pitch</div><div class="v" id="hPitch">—<span class="u">°</span></div></div>
-        <div class="card"><div class="k">Yaw</div><div class="v" id="hYaw">—<span class="u">°</span></div></div>
-        <div class="card"><div class="k">Altitude</div><div class="v" id="hAlt">—<span class="u">m</span></div></div>
-        <div class="card"><div class="k">V-speed</div><div class="v" id="hVz">—<span class="u">m/s</span></div></div>
-        <div class="card"><div class="k">ToF A</div><div class="v" id="hTof0">—<span class="u">mm</span></div></div>
-        <div class="card"><div class="k">ToF B</div><div class="v" id="hTof1">—<span class="u">mm</span></div></div>
-        <div class="card"><div class="k">Flags</div><div class="v" id="hFlags" style="font-size:12px">—</div></div>
-      </div>
-    </div>
-    <div class="panel">
-      <h2>Motor test — capped 30% (firmware enforced)</h2>
-      <div class="motors" id="motorsHop"></div>
-      <div class="row">
-        <button class="arm" id="btnArmHop">ARM</button>
-        <button class="disarm" id="btnDisarmHop">DISARM</button>
-        <button id="btnStopHop">ZERO ALL</button>
-      </div>
-    </div>
-    <div class="panel" style="grid-column: 1 / -1"><h2>Roll / Pitch / Yaw — live</h2><canvas id="chartAtt" width="900" height="120" style="width:100%"></canvas></div>
-    <div class="panel" style="grid-column: 1 / -1"><h2>Altitude &amp; ToF — live</h2><canvas id="chartAlt" width="900" height="120" style="width:100%"></canvas></div>
-  </div>
-</div>
-
 <!-- ============================== ROBOSUB ============================== -->
-<div id="viewSub" style="display:none">
+<div id="viewSub">
   <div class="grid">
     <div class="panel"><h2>Heading</h2><canvas id="compassSub" class="inst" width="220" height="220"></canvas></div>
     <div class="panel">
@@ -144,13 +107,12 @@
         <div class="card"><div class="k">Roll</div><div class="v" id="sRoll">—<span class="u">°</span></div></div>
         <div class="card"><div class="k">Pitch</div><div class="v" id="sPitch">—<span class="u">°</span></div></div>
         <div class="card"><div class="k">Z</div><div class="v" id="sZ">—<span class="u">m</span></div></div>
-        <div class="card"><div class="k">X</div><div class="v">n/a</div></div>
-        <div class="card"><div class="k">Y</div><div class="v">n/a</div></div>
+        <div class="card"><div class="k">V-speed</div><div class="v" id="sVz">—<span class="u">m/s</span></div></div>
+        <div class="card"><div class="k">Flags</div><div class="v" id="sFlags" style="font-size:12px">—</div></div>
       </div>
       <div class="note">
-        X/Y position await <b>JetsonLink / ExternalEstimator</b> (see
-        docs/ros_link.md). Orientation shown is whatever the ESP32's current
-        estimator reports.
+        X/Y are not in the ESP telemetry frame — view them in Foxglove straight
+        off the EKF topic. Orientation/depth shown here is what the ESP holds.
       </div>
     </div>
     <div class="panel" style="grid-column: 1 / -1">
@@ -257,9 +219,8 @@ const parser = {
 };
 
 /* ------------------------------ app state -------------------------------- */
-const telem = { ts:0, roll:0, pitch:0, yaw:0, alt:NaN, vz:NaN, flags:0,
-                tof:[null,null], lastRx:0 };
-const hist = { roll:[], pitch:[], yaw:[], alt:[], tof0:[], tof1:[] };  // ring buffers
+const telem = { ts:0, roll:0, pitch:0, yaw:0, alt:NaN, vz:NaN, flags:0, lastRx:0 };
+const hist = { yaw:[], alt:[] };  // ring buffers for the target-vs-actual charts
 const HIST_N = 300;
 let port = null, writer = null, readerAbort = null;
 let ws = null;  // WebSocket transport (remote, via gcs_server.py)
@@ -374,17 +335,11 @@ function onFrame(type, p) {
     telem.alt   = dv.getInt16(10, true) / 1000;
     telem.vz    = dv.getInt16(12, true) / 1000;
     telem.flags = dv.getUint8(14);
-    if (p.length >= 19) {
-      const a = dv.getUint16(15, true), b = dv.getUint16(17, true);
-      telem.tof = [a === 0xFFFF ? null : a, b === 0xFFFF ? null : b];
-    }
     telem.lastRx = performance.now();
     armed = !!(telem.flags & 1);
     stateCount++;
-    push("roll", telem.roll); push("pitch", telem.pitch); push("yaw", telem.yaw);
+    push("yaw", telem.yaw);
     push("alt", telem.alt);
-    push("tof0", telem.tof[0] == null ? NaN : telem.tof[0] / 1000);
-    push("tof1", telem.tof[1] == null ? NaN : telem.tof[1] / 1000);
   } else if (type === T.ACK) {
     const [echoed, ok, reason] = p;
     log(`ACK ${TYPE_NAMES[echoed] ?? echoed}: ${ok ? "accepted" : "REFUSED"} (${ACK_REASONS[reason] ?? reason})`,
@@ -423,10 +378,8 @@ function cmdMotor(i, frac) {
 
 /* --------------------------- motor slider panels -------------------------- */
 const motorSendAt = {};
-// `bidir` gives the robosub's reversible thrusters a negative half. The
-// hopcopter's propellers cannot run backwards, so its sliders start at 0.
-// Range caps mirror Safety::test_limit_ (30%), which clamps magnitude and
-// keeps the sign.
+// `bidir` gives the reversible thrusters their negative half. Range caps mirror
+// Safety::test_limit_ (30%), which clamps magnitude and keeps the sign.
 function buildMotors(el, count, prefix, bidir = false) {
   for (let i = 0; i < count; i++) {
     const row = document.createElement("div");
@@ -447,17 +400,14 @@ function buildMotors(el, count, prefix, bidir = false) {
     el.appendChild(row);
   }
 }
-buildMotors(document.getElementById("motorsHop"), 4, "M", false);
 buildMotors(document.getElementById("motorsSub"), 8, "T", true);
 function zeroSliders() {
   document.querySelectorAll(".motor input").forEach(s => {
     s.value = 0; s.dispatchEvent(new Event("input"));
   });
 }
-for (const [btn, fn] of [["btnArmHop", cmdArm], ["btnArmSub", cmdArm],
-                         ["btnDisarmHop", cmdDisarm], ["btnDisarmSub", cmdDisarm]])
-  document.getElementById(btn).onclick = fn;
-document.getElementById("btnStopHop").onclick = zeroSliders;
+document.getElementById("btnArmSub").onclick = cmdArm;
+document.getElementById("btnDisarmSub").onclick = cmdDisarm;
 document.getElementById("btnStopSub").onclick = zeroSliders;
 
 /* --------------------------- PID tuning (robosub) ------------------------- */
@@ -567,49 +517,7 @@ function drawTuning(ctx, w, h, data, setpoint, color) {
   ctx.stroke();
 }
 
-/* -------------------------------- tabs ----------------------------------- */
-const tabHop = document.getElementById("tabHop"), tabSub = document.getElementById("tabSub");
-function setTab(hop) {
-  document.getElementById("viewHop").style.display = hop ? "" : "none";
-  document.getElementById("viewSub").style.display = hop ? "none" : "";
-  tabHop.classList.toggle("active", hop);
-  tabSub.classList.toggle("active", !hop);
-  localStorage.setItem("tg_tab", hop ? "hop" : "sub");
-}
-tabHop.onclick = () => setTab(true);
-tabSub.onclick = () => setTab(false);
-setTab(localStorage.getItem("tg_tab") !== "sub");
-
 /* ----------------------------- instruments ------------------------------- */
-function drawHorizon(ctx, w, h, rollDeg, pitchDeg) {
-  const cx = w / 2, cy = h / 2, r = Math.min(cx, cy) - 6;
-  ctx.clearRect(0, 0, w, h);
-  ctx.save();
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.clip();
-  ctx.translate(cx, cy);
-  ctx.rotate(-rollDeg * Math.PI / 180);
-  const off = pitchDeg * (r / 45);          // 45° of pitch spans the radius
-  ctx.fillStyle = "#274b6d"; ctx.fillRect(-2*r, -2*r + off, 4*r, 2*r);  // sky
-  ctx.fillStyle = "#4d3a1f"; ctx.fillRect(-2*r, off, 4*r, 2*r);        // ground
-  ctx.strokeStyle = "#e6edf3"; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(-r, off); ctx.lineTo(r, off); ctx.stroke();
-  ctx.strokeStyle = "rgba(230,237,243,.55)"; ctx.lineWidth = 1;
-  ctx.font = "9px monospace"; ctx.fillStyle = "rgba(230,237,243,.55)"; ctx.textAlign = "center";
-  for (const p of [-30, -20, -10, 10, 20, 30]) {
-    const y = off + p * (r / 45), lw = p % 20 === 0 ? 26 : 15;
-    ctx.beginPath(); ctx.moveTo(-lw, y); ctx.lineTo(lw, y); ctx.stroke();
-    if (p % 20 === 0) ctx.fillText(Math.abs(p), lw + 12, y + 3);
-  }
-  ctx.restore();
-  // fixed aircraft reference
-  ctx.strokeStyle = "#f0b429"; ctx.lineWidth = 3; ctx.beginPath();
-  ctx.moveTo(cx - 34, cy); ctx.lineTo(cx - 10, cy); ctx.lineTo(cx - 4, cy + 6);
-  ctx.moveTo(cx + 34, cy); ctx.lineTo(cx + 10, cy); ctx.lineTo(cx + 4, cy + 6);
-  ctx.stroke();
-  ctx.strokeStyle = "#30363d"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
-}
-
 function drawCompass(ctx, w, h, yawDeg) {
   const cx = w / 2, cy = h / 2, r = Math.min(cx, cy) - 6;
   ctx.clearRect(0, 0, w, h);
@@ -639,27 +547,6 @@ function drawCompass(ctx, w, h, yawDeg) {
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
 }
 
-function drawChart(ctx, w, h, series, colors, lo, hi) {
-  ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = "#21262d";
-  for (let i = 1; i < 4; i++) {
-    const y = h * i / 4;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  }
-  series.forEach((data, si) => {
-    ctx.strokeStyle = colors[si]; ctx.lineWidth = 1.5; ctx.beginPath();
-    let started = false;
-    data.forEach((v, i) => {
-      if (Number.isNaN(v)) { started = false; return; }
-      const x = i * w / (HIST_N - 1);
-      const y = h - (v - lo) / (hi - lo) * h;
-      started ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      started = true;
-    });
-    ctx.stroke();
-  });
-}
-
 /* ------------------------------ render loop ------------------------------ */
 const $ = id => document.getElementById(id);
 const fmt = (v, dp = 2) => Number.isFinite(v) ? v.toFixed(dp) : "—";
@@ -676,36 +563,18 @@ function render() {
   const flagStr = [(flags & 1) && "ARM", (flags & 2) && "EST", (flags & 4) && "ALT", (flags & 8) && "LNK"]
     .filter(Boolean).join(" ") || "—";
 
-  if ($("viewHop").style.display !== "none") {
-    $("hRoll").childNodes[0].nodeValue = fmt(telem.roll, 1);
-    $("hPitch").childNodes[0].nodeValue = fmt(telem.pitch, 1);
-    $("hYaw").childNodes[0].nodeValue = fmt(telem.yaw, 1);
-    $("hAlt").childNodes[0].nodeValue = fmt(telem.alt, 3);
-    $("hVz").childNodes[0].nodeValue = fmt(telem.vz, 2);
-    $("hTof0").childNodes[0].nodeValue = telem.tof[0] == null ? "—" : telem.tof[0];
-    $("hTof1").childNodes[0].nodeValue = telem.tof[1] == null ? "—" : telem.tof[1];
-    $("hFlags").textContent = flagStr;
-    const hz = $("horizon"), ch = $("compassHop");
-    drawHorizon(hz.getContext("2d"), hz.width, hz.height, telem.roll, telem.pitch);
-    drawCompass(ch.getContext("2d"), ch.width, ch.height, telem.yaw);
-    const ca = $("chartAtt");
-    drawChart(ca.getContext("2d"), ca.width, ca.height,
-              [hist.roll, hist.pitch, hist.yaw], ["#f85149", "#3fb950", "#58d0ff"], -90, 90);
-    const cl = $("chartAlt");
-    drawChart(cl.getContext("2d"), cl.width, cl.height,
-              [hist.alt, hist.tof0, hist.tof1], ["#58d0ff", "#d29922", "#bc8cff"], 0, 2);
-  } else {
-    $("sYaw").childNodes[0].nodeValue = fmt(((telem.yaw % 360) + 360) % 360, 1);
-    $("sRoll").childNodes[0].nodeValue = fmt(telem.roll, 1);
-    $("sPitch").childNodes[0].nodeValue = fmt(telem.pitch, 1);
-    $("sZ").childNodes[0].nodeValue = fmt(telem.alt, 3);
-    const cs = $("compassSub");
-    drawCompass(cs.getContext("2d"), cs.width, cs.height, telem.yaw);
-    const cd = $("chartDepth");
-    drawTuning(cd.getContext("2d"), cd.width, cd.height, hist.alt, setp.depth, "#58d0ff");
-    const chh = $("chartHeading");
-    drawTuning(chh.getContext("2d"), chh.width, chh.height, hist.yaw, setp.heading, "#bc8cff");
-  }
+  $("sYaw").childNodes[0].nodeValue = fmt(((telem.yaw % 360) + 360) % 360, 1);
+  $("sRoll").childNodes[0].nodeValue = fmt(telem.roll, 1);
+  $("sPitch").childNodes[0].nodeValue = fmt(telem.pitch, 1);
+  $("sZ").childNodes[0].nodeValue = fmt(telem.alt, 3);
+  $("sVz").childNodes[0].nodeValue = fmt(telem.vz, 2);
+  $("sFlags").textContent = flagStr;
+  const cs = $("compassSub");
+  drawCompass(cs.getContext("2d"), cs.width, cs.height, telem.yaw);
+  const cd = $("chartDepth");
+  drawTuning(cd.getContext("2d"), cd.width, cd.height, hist.alt, setp.depth, "#58d0ff");
+  const chh = $("chartHeading");
+  drawTuning(chh.getContext("2d"), chh.width, chh.height, hist.yaw, setp.heading, "#bc8cff");
   lastRender = performance.now();
 }
 /* rAF gives 60 fps while the tab is visible, but browsers stop firing it for
@@ -728,21 +597,16 @@ function toggleDemo() {
         roll:  12 * Math.sin(demoT * 0.9),
         pitch: 7 * Math.sin(demoT * 0.6 + 1),
         yaw:   (demoT * 9) % 360,
-        alt:   0.5 + 0.35 * Math.sin(demoT * 0.4),
+        alt:   -1.0 + 0.35 * Math.sin(demoT * 0.4),  // ENU z, submerged
         vz:    0.35 * 0.4 * Math.cos(demoT * 0.4),
       };
-      const tofBase = p.alt * 1000 * Math.cos(p.roll * Math.PI / 180);
       Object.assign(telem, p, {
         ts: Math.round(demoT * 1e6),
         flags: 0b1110 | (armed ? 1 : 0),
-        tof: [Math.round(tofBase + (Math.random() - .5) * 25),
-              Math.random() < 0.93 ? Math.round(tofBase + (Math.random() - .5) * 25) : null],
         lastRx: performance.now(),
       });
-      push("roll", telem.roll); push("pitch", telem.pitch); push("yaw", ((telem.yaw + 180) % 360) - 180);
+      push("yaw", ((telem.yaw + 180) % 360) - 180);
       push("alt", telem.alt);
-      push("tof0", telem.tof[0] == null ? NaN : telem.tof[0] / 1000);
-      push("tof1", telem.tof[1] == null ? NaN : telem.tof[1] / 1000);
       stateCount++;
     }, 50);
   } else {

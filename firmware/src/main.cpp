@@ -1,109 +1,61 @@
 #include <Arduino.h>
 #include "comms/CommandLink.h"
+#include "comms/JetsonLink.h"
+#include "control/RobosubController.h"
+#include "estimator/ExternalEstimator.h"
 #include "estimator/IStateEstimator.h"
+#include "mixer/RobosubMixer.h"
 #include "motors/MotorManager.h"
 #include "safety/HardwareWatchdog.h"
 #include "safety/Safety.h"
 
-// Vehicle selection happens ONCE here, at compile time, via a build flag — the
-// factory promised in docs/estimator.md. Everything below the IStateEstimator
-// seam (Safety, CommandLink, the control loop) is identical for both vehicles;
-// only the estimator, the motor hardware, the pose source, and the control law
-// differ.
+// Robosub flight controller. The Jetson fuses the VectorNav IMU + ZED stereo
+// (robot_localization EKF) into a pose and streams it here; this firmware holds
+// depth + heading and drives the thrusters, with independent failsafes.
 //
-//   default             -> hopcopter (onboard Mahony fusion, I2C IMU)
-//   -D VEHICLE_ROBOSUB   -> robosub  (external pose from the Jetson EKF)
+// NOTE: control is slated to move to a Jetson ROS node (see
+// tardigrade_ws/docs/jetson_control_architecture.md). Until that lands, the
+// on-ESP RobosubController stays as the working control path. Manual per-
+// thruster bench testing does not depend on it.
 
 using namespace tardigrade;
 
-#if defined(VEHICLE_ROBOSUB)
-#include "comms/JetsonLink.h"
-#include "control/RobosubController.h"
-#include "estimator/ExternalEstimator.h"
-#include "mixer/RobosubMixer.h"
-
-// Thruster pins and order from tardigrade_ws esp_thruster_map.json. No onboard
-// I2C IMU on the sub, so the I2C pins are free to drive thrusters.
+// Thruster pins and order from tardigrade_ws esp_thruster_map.json.
 constexpr uint8_t kMotorPins[] = {21, 19, 27, 18, 5, 14, 12, 26};
-constexpr EscMode kEscMode = EscMode::Bidirectional;  // reversible thrusters
-const char* const kVehicleName = "ROBOSUB";
+constexpr uint8_t kMotorCount = sizeof(kMotorPins);
 
 JetsonLink jetson;
 ExternalEstimator vehicle_estimator(jetson);
 RobosubController controller;
 RobosubMixer mixer;
 
-// The controller owns its hold target and its output authority cap; both are
-// live-tunable over the parameter path. See RobosubController / Parameters.h.
-bool prev_armed = false;
-uint32_t last_ctrl_us = 0;
-#else
-#include "drivers/Icm20948.h"
-#include "estimator/OnboardEstimator.h"
-
-// ESC pins avoiding the strapping pins (0, 2, 12, 15) and input-only 34-39.
-constexpr uint8_t kMotorPins[] = {25, 26, 27, 33};
-constexpr EscMode kEscMode = EscMode::Unidirectional;  // propellers
-const char* const kVehicleName = "HOPCOPTER";
-
-Icm20948 imu;  // I2C, SparkFun default address 0x69
-OnboardEstimator vehicle_estimator(imu);
-#endif
-
-constexpr uint8_t kMotorCount = sizeof(kMotorPins);
-
-MotorManager motors(kMotorPins, kMotorCount, kEscMode);
+MotorManager motors(kMotorPins, kMotorCount, EscMode::Bidirectional);
 Safety safety(motors);
 CommandLink command_link(Serial, safety, kMotorCount);
 
-// The rest of the firmware sees only this. Neither the loop nor any consumer
-// knows which vehicle produced the estimate.
+// The loop and its consumers see only the interface, never the concrete type.
 IStateEstimator& estimator = vehicle_estimator;
 
 // Latches true the first time the estimate is healthy. The sensor-timeout
-// failsafe only fires after this — otherwise a bench robosub with no Jetson
-// (never healthy) would disarm itself the instant it armed, blocking manual
-// thruster checks.
+// failsafe only fires after this — otherwise a bench sub with no Jetson (never
+// healthy) would disarm itself the instant it armed, blocking manual thruster
+// checks.
 bool ever_healthy = false;
+bool prev_armed = false;
+uint32_t last_ctrl_us = 0;
 
 constexpr uint32_t kPrintIntervalMs = 100;
 uint32_t last_print_ms = 0;
 
-static void beginSensors() {
-#if defined(VEHICLE_ROBOSUB)
-    command_link.setJetsonLink(&jetson);
-    command_link.setParameterSink(&controller);  // live PID tuning
-    controller.loadFromFlash();  // overlay saved gains onto compiled defaults
-    Serial.println("waiting for Jetson pose over the ROS link...");
-#else
-    if (imu.begin()) {
-        Serial.println("ICM-20948 online (+/-2000 dps, +/-8 g)");
-        Serial.println("Calibrating gyro - HOLD STILL...");
-        if (imu.calibrateGyro()) {
-            const Vec3& b = imu.gyroBias();
-            Serial.printf("gyro bias [rad/s]=% .4f % .4f % .4f\n",
-                          b.x, b.y, b.z);
-        } else {
-            Serial.println("gyro calibration incomplete - bias inaccurate");
-        }
-    } else {
-        Serial.println("ICM-20948 not found - check wiring and ADR jumper");
-    }
-#endif
-    estimator.begin();
-}
-
-// Per-vehicle control law: estimate + setpoints -> mixed thruster commands.
-// The hopcopter's controller is not built yet, so its step is currently empty.
+// Estimate + setpoints -> mixed thruster commands.
 static void controlStep(uint32_t now_us) {
-#if defined(VEHICLE_ROBOSUB)
     const bool armed = safety.armed();
     const bool healthy = estimator.healthy();
     const VehicleState& s = estimator.state();
 
-    // Arm rising edge: capture "hold here". This is what makes the tuning
-    // workflow work — submerge, level off, arm, and it holds THIS depth and
-    // heading. (The setpoint can then be stepped live over the parameter path.)
+    // Arm rising edge: capture "hold here" — submerge, level off, arm, and it
+    // holds THIS depth and heading. (Setpoints can be stepped over the
+    // parameter path.)
     if (armed && !prev_armed) {
         controller.captureHold(s);
         last_ctrl_us = now_us;
@@ -130,15 +82,12 @@ static void controlStep(uint32_t now_us) {
         controller.reset();
         last_ctrl_us = now_us;
     }
-#else
-    (void)now_us;  // hopcopter controller: TODO
-#endif
 }
 
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.printf("Tardigrade FC starting (%s)...\n", kVehicleName);
+    Serial.println("Tardigrade FC starting (ROBOSUB)...");
 
     if (HardwareWatchdog::resetWasWatchdog()) {
         Serial.println("!! previous boot ended in a WATCHDOG RESET !!");
@@ -151,9 +100,13 @@ void setup() {
         Serial.println("ESC output setup FAILED - check pins");
     }
 
-    beginSensors();
+    command_link.setJetsonLink(&jetson);
+    command_link.setParameterSink(&controller);  // live PID tuning
+    controller.loadFromFlash();  // overlay saved gains onto compiled defaults
+    estimator.begin();
+    Serial.println("waiting for Jetson pose over the ROS link...");
 
-    // Watchdog LAST: gyro calibration and the ESC hold block for seconds.
+    // Watchdog LAST: the ESC idle hold blocks for seconds.
     if (HardwareWatchdog::begin(1)) {
         Serial.println("hardware watchdog armed (1 s)");
     } else {
@@ -172,7 +125,7 @@ void loop() {
     safety.update(now_us);
 
     // Sensor-timeout failsafe: once the estimate has been healthy, losing it
-    // while armed disarms. Both vehicles use the one mechanism.
+    // while armed disarms.
     if (estimator.healthy()) {
         ever_healthy = true;
     } else if (safety.armed() && ever_healthy) {
@@ -189,9 +142,8 @@ void loop() {
 
     const VehicleState& s = estimator.state();
     Serial.printf(
-        "%s rpy=% 7.2f % 7.2f % 7.2f [deg] alt=% .2f healthy=%d armed=%d "
+        "ROBOSUB rpy=% 7.2f % 7.2f % 7.2f [deg] alt=% .2f healthy=%d armed=%d "
         "link=%s crc_err=%lu\n",
-        kVehicleName,
         s.roll_rad * RAD_TO_DEG, s.pitch_rad * RAD_TO_DEG,
         s.yaw_rad * RAD_TO_DEG, s.altitude_m,
         estimator.healthy(), safety.armed(),

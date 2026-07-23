@@ -91,6 +91,6 @@ Two places, with different roles:
 
 Click it (or **Copy code**) to copy, paste over
 [`applyDefaults()`](../firmware/src/control/RobosubController.cpp), commit, and
-reflash (`pio run -e robosub -t upload`). If the good gains only ever live in one
+reflash (`pio run -t upload`). If the good gains only ever live in one
 board's flash, a reflash or a second sub silently disagrees — the git copy is
 what keeps every board identical.
