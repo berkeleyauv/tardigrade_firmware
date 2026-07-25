@@ -80,6 +80,13 @@ def decode_parameter(p: bytes):
     return pid, value
 
 
+def decode_ack(p: bytes):
+    """Ack frame payload -> (echoed_type, accepted, reason), or None if malformed."""
+    if len(p) < 3:
+        return None
+    return p[0], bool(p[1]), p[2]
+
+
 def encode_pose(seq, pos, quat, linvel, angvel) -> bytes:
     """pos/linvel/angvel: (x, y, z); quat: (w, x, y, z). See kPoseFrameLen."""
     payload = struct.pack(
@@ -186,6 +193,9 @@ def _selftest() -> int:
     po2 = list(Parser().feed(pf2))
     check(decode_parameter(po2[0][1]) == (0x12, struct.unpack("<f", struct.pack("<f", 0.4))[0]),
           "parameter reply decodes")
+
+    ackp = bytes([SET_MOTOR, 1, 0])
+    check(decode_ack(ackp) == (SET_MOTOR, True, 0), "ack decodes")
 
     bad = bytearray(f); bad[5] ^= 1
     p2 = Parser()
