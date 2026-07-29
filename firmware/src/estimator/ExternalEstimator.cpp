@@ -28,9 +28,19 @@ bool ExternalEstimator::update(uint32_t now_us) {
     // timestamp — the two clocks are unrelated.
     stale_ = (now_us - p.received_us) > freshness_timeout_us_;
 
-    // Only advance the state on a genuinely new sample. Re-copying the same
-    // pose every tick would be harmless but pointless; the freshness check
-    // above already handles "no new data".
+    // These two must track staleness EVERY tick, not just when a new sample
+    // arrives — telemetry (State frame's kFlagStateValid/kFlagAltitudeOk) reads
+    // them directly, and once pose stops arriving there IS no new sample to
+    // trigger an update. Without this, a stalled pose feed leaves the wire
+    // telemetry reporting "valid" indefinitely even as healthy() (which reads
+    // stale_ directly) correctly goes false and disarms — a telemetry lie the
+    // operator has no way to detect from the State frame alone.
+    state_.valid = !stale_;
+    state_.altitude_valid = !stale_;
+
+    // Only advance orientation/velocity on a genuinely new sample. Re-copying
+    // the same pose every tick would be harmless but pointless; the freshness
+    // check above already handles "no new data" for the validity flags.
     const bool fresh_sample = !seq_started_ || (p.seq != last_seq_);
     if (!fresh_sample) {
         return false;
@@ -50,9 +60,6 @@ bool ExternalEstimator::update(uint32_t now_us) {
     state_.vertical_velocity_mps = p.linear_velocity.z;
 
     fillEulerFromQuaternion();
-
-    state_.valid = !stale_;
-    state_.altitude_valid = !stale_;
     return true;
 }
 
