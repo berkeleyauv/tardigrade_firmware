@@ -45,11 +45,28 @@ confirmed against the firmware and the browser).
 `foxglove_integration.md`, and (in `tardigrade_ws`) `esp_bridge.py` (F1, ROS
 telemetry republish), `EspState.msg`, `jetson_control_architecture.md`.
 
-**Verified on real hardware so far: none of the robosub-specific pieces.**
-ESCs, watchdog trip, the control chain driving real thrusters, flash
-save/reset, the WebSocket path live, D4, and D5 are all compile-/protocol-/
-browser-verified only. (The one thing actually run on hardware — the
-ICM-20948 tilt test — was hopcopter-only and no longer applies to this repo.)
+**Verified on real hardware (Jul 29–30 bench session):** all 8 ESCs/thrusters
+spin correctly by slot; the operator-link deadman disarms within 300 ms of
+`esp_bridge` dying; the sensor/pose-timeout failsafe disarms correctly
+(bench-tested via a temporary synthetic-pose hook in `esp_bridge` — see
+`tardigrade_ws` README); disarmed motor commands are rejected; and the full
+Jetson-side mixer chain (`thruster_mixer` → `esp_bridge` →
+`/tardigrade/thrusters/cmd`) drives real thrusters correctly through surge,
+sway, heave, and yaw. Three thrusters (slots 2, 6, 7) were found with
+reversed polarity during bench testing and fixed in
+`tardigrade_ws/config/esp_thruster_map.json` — see that repo's commit
+history. A real telemetry bug was also found and fixed: `ExternalEstimator`
+was freezing `state_valid`/`altitude_valid` at their last value instead of
+tracking staleness live (fixed in this repo).
+
+**Still not verified on hardware:** the hardware watchdog trip (needs a
+deliberate firmware hang + reflash, not yet done), flash save/reset of PID
+gains, the webapp/WebSocket path (`dashboard.html`/`gcs_server.py` — today's
+session used the Foxglove/ROS path exclusively), and the on-Jetson
+`depth_attitude_controller` PID itself (only the mixer half of the Track C1
+chain was exercised — no real EKF pose was fed to it, only direct `Twist`
+commands via `/tardigrade/cmd_vel`). D5's PID convergence and D2's webapp
+fallback are therefore both still unproven claims, not confirmed regressions.
 
 ## Safety model
 
@@ -78,7 +95,7 @@ params with no ESP round-trip).
 
 | Phase | Window | Definition of done |
 |---|---|---|
-| **1 — Dry bench** | Jul 21–22 | Robosub flashes + boots; every thruster spins the correct direction; watchdog reset, deadman disarm, and sensor-timeout all observed firing; webapp connects locally. See [bench_checklist.md](bench_checklist.md). |
+| **1 — Dry bench** | Jul 21–22 | Robosub flashes + boots; every thruster spins the correct direction (**done Jul 30** — 3 reversed thrusters found + fixed); deadman disarm and sensor-timeout observed firing (**done Jul 30**); watchdog reset observed firing (**not done**); webapp connects locally (**not done** — this session used Foxglove/ROS exclusively). See [bench_checklist.md](bench_checklist.md). |
 | **2 — Network + Jetson** | Jul 22–24 | `gcs_server.py --ros` on the Jetson; a second laptop opens `http://<jetson>:8080/` over the LAN and sees live data; real EKF pose makes `ExternalEstimator` report `healthy`. |
 | **3 — Water + tuning** | Jul 24–29 | Depth signal validated; leveling→heading→depth tuned per [pid_tuning.md](pid_tuning.md); gains saved to flash and holding across a reset (on-ESP controller — see D5 for where tuning moves next). |
 | **4 — Finalize** | Jul 29–30 | Tuned gains pasted into `RobosubController::applyDefaults()` and committed; final `firmware.bin` cut. |
@@ -87,8 +104,8 @@ params with no ESP round-trip).
 
 | Phase | Window | Depends on | Definition of done |
 |---|---|---|---|
-| **F1 — Bridge core (read-only)** | Jul 21–23 | nothing — parallel with Phase 1 | `EspState.msg` + `esp_bridge` node publish `/tardigrade/esp/state`; a minimal Foxglove layout shows live data off the bench ESP. **Built** — see `tardigrade_ws/src/tardigrade_esp/tardigrade_esp/esp_bridge.py`; needs a real `colcon build` + on-hardware run to close out. |
-| **F2 — Control surface** | Jul 23–25 | **Phase 1 complete** | `/tardigrade/set_armed` service + continuous Heartbeat-while-armed; motor-test topic; a pilot layout. **Tuning parameters drop out of this phase if Track C lands first** — see below. |
+| **F1 — Bridge core (read-only)** | Jul 21–23 | nothing — parallel with Phase 1 | `EspState.msg` + `esp_bridge` node publish `/tardigrade/esp/state`; a minimal Foxglove layout shows live data off the bench ESP. **Done Jul 30** — verified on real hardware, live telemetry confirmed in Foxglove. |
+| **F2 — Control surface** | Jul 23–25 | **Phase 1 complete** | `/tardigrade/set_armed` service + continuous Heartbeat-while-armed; motor-test topic; a pilot layout. **Set_armed, heartbeat, and motor-test all verified on real hardware Jul 30** (see `esp_bridge.py`'s F2 subset); no saved pilot layout yet, panels were ad hoc. Tuning-parameter sync is now moot — Track C1 landed first (see below), so gains live as Jetson ROS params, not ESP round-trips. |
 | **F3 — Multi-client validation + kill-switch rehearsal** | Jul 25–27 | F2, Phase 2's network path | Two laptops connect simultaneously with different layouts and both see the same live data; arm/disarm/motor-test confirmed working via Foxglove; kill switch physically rehearsed. |
 | **F4 — Recording + finalize + webapp retirement** | Jul 27–30 | F2, F3 | A real tuning session recorded via rosbag; playback confirmed with no Jetson attached; the standard layouts saved; webapp marked retired-but-available-as-fallback. |
 
@@ -96,7 +113,7 @@ params with no ESP round-trip).
 
 | Phase | Window | Definition of done |
 |---|---|---|
-| **C1 — Controller + mixer nodes** | Jul 23–27 | PID controller and mixer run as Jetson ROS nodes on `/tardigrade/thrusters/cmd`, gains as ROS params loaded from a YAML. Runs alongside the existing ESP controller — not yet load-bearing. |
+| **C1 — Controller + mixer nodes** | Jul 23–27 | PID controller and mixer run as Jetson ROS nodes on `/tardigrade/thrusters/cmd`, gains as ROS params loaded from a YAML. Runs alongside the existing ESP controller — not yet load-bearing. **Mixer half verified on real hardware Jul 30** (`thruster_mixer` driving real thrusters correctly via `/tardigrade/cmd_vel`, all axes). **Controller half (`depth_attitude_controller`) still unverified** — no real EKF pose fed to it yet, only direct `Twist` commands bypassing the PID entirely. |
 | **C2 — Sim validation** | Jul 26–29 | Same nodes drive `tardigrade_sim`; tuned in sim, gains committed to the YAML. |
 | **C3 — Real-robot cutover** (stretch) | after Jul 29 | Jetson controller output validated against the proven on-ESP baseline from Track A; once trusted, `esp_bridge` extended to accept `/tardigrade/thrusters/cmd` directly; ESP stripped to the safe-actuator role (`RobosubController`, `ExternalEstimator`, `JetsonLink`, the `Pose` frame removed). |
 
@@ -117,7 +134,9 @@ Track C's replacement is proven.
 
 - **Phase 1 gates everything on Track A**, and now also gates Track C's C3.
   The most likely slip is a bad ESC or an inverted thruster found on the
-  bench. The checklist front-loads exactly these.
+  bench. The checklist front-loads exactly these. **This materialized Jul
+  30** — 3 of 8 thrusters had reversed polarity, found and fixed via
+  systematic per-thruster + per-axis bench testing. No ESC failures.
 - **Depth sensor (decide in Phase 2).** Depth comes from the EKF `z`, fed by
   ZED visual odometry, which degrades underwater. If depth hold is jittery in
   Phase 3 the estimator is the likely cause, and a pressure sensor fused into
